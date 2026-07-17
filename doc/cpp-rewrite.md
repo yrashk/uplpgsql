@@ -40,13 +40,15 @@ only detonates at `-O2`.  Convert such loops with explicit flags.
    - `common/` compile layer (`upl_compile_stmts.cpp`,
      `upl_compile_expr.cpp`) — LLVM C++ API alongside core.
    - `common/` fork layer (`upl_exec.cpp`, `upl_comp.cpp`, `upl_funcs.cpp`,
-     `upl_runtime.cpp`) — these are deliberate forks of PostgreSQL's
-     `pl_exec.c`/`pl_comp.c`/`pl_funcs.c` and their maintainability comes
-     from staying diffable against upstream.  They compile as C++20 and get
-     a light idiomatic pass (nullptr, no writable-string conversions, C++
-     types at the compiler seam), but keep PG structure and error flow by
-     design.  Their entry points keep C linkage: the bison parser and the
-     OrcJIT symbol resolution depend on it.
+     `upl_runtime.cpp`) — although forked from PostgreSQL's
+     `pl_exec.c`/`pl_comp.c`/`pl_funcs.c`, upstream diffability is
+     explicitly NOT a goal: these are full C++20 citizens like everything
+     else (classes over state-threading free functions, nullptr, C++
+     casts, value initialization, C++ strings where lifetimes allow).
+     The only exemptions are hard ABI: `extern "C"` `uplpgsql_rt_*`
+     symbol names for OrcJIT, JIT-GEP'd struct layouts
+     (`UPLpgSQL_exec_state`, the datum offsets), and the generated
+     parser skeleton's internals.
    - Grammar/scanner stay flex/bison with C skeletons, compiled as C++;
      actions are C++-clean.
 
