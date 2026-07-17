@@ -5,6 +5,23 @@ This tree is being rewritten from C to coherent C++20 on top of
 single header `cppgres.hpp`, generated with `cpp-amalgamate src/cppgres.hpp`),
 and from the LLVM C API to the LLVM C++ API.
 
+## Result
+
+The rewrite is complete: no `PG_TRY` outside PostgreSQL itself, no raw
+`SPI_*` call sites (everything runs under `cppgres::ffi_guard` or the
+cppgres SPI executor/plan API; the only exception is
+`SPI_result_code_string`/`SPI_plan_get_plan_sources`, static lookups that
+cannot error), no `foreach` (ranges over `cppgres::list<T>`), and the
+compilers/handler/interpreter boundaries are classes
+(`uplpgsql::function_compiler`, `uplpgsql::call`, `uplpgsql::do_block`).
+
+One hard-won lesson is recorded here for future conversions: plpgsql's C
+code sometimes reads a `foreach` loop's cell variable *after* the loop
+("did any handler match" in `exec_stmt_block`, first-iteration tests in
+dump code).  A range-for conversion that leaves the old `ListCell`
+declaration behind turns those reads into uninitialized-variable UB that
+only detonates at `-O2`.  Convert such loops with explicit flags.
+
 ## Stages
 
 1. **Transitional (done first):** every translation unit compiles as C++20

@@ -124,6 +124,19 @@ index c943846..19de9a7 100644
    template <typename Ret, convertible_into_nullable_datum... Args>
    results<Ret> query(spi_plan<Args...> &query, Args &&...args) {
      return this->query<Ret, Args...>(query, options(), std::forward<Args>(args)...);
+diff --git a/src/cppgres/function.hpp b/src/cppgres/function.hpp
+index f419dcd..72e17c6 100644
+--- a/src/cppgres/function.hpp
++++ b/src/cppgres/function.hpp
+@@ -524,7 +524,7 @@ template <has_type_traits T> function<const char *, T> output_function(T &v) {
+   return function<const char *, T>(foutoid);
+ }
+ 
+-static function<const char *, cppgres::value> output_function(const type &t) {
++inline function<const char *, cppgres::value> output_function(const type &t) {
+   ::Oid foutoid;
+   bool typisvarlena;
+   ffi_guard{::getTypeOutputInfo}(t.oid, &foutoid, &typisvarlena);
 diff --git a/src/cppgres/list.hpp b/src/cppgres/list.hpp
 new file mode 100644
 index 0000000..ce85035

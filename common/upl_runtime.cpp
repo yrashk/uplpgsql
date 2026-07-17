@@ -696,7 +696,7 @@ uplpgsql_rt_fetch_cursor_row(UPLpgSQL_exec_state *estate,
 		 */
 		if (cctx->batch_tuptab)
 		{
-			SPI_freetuptable(cctx->batch_tuptab);
+			cppgres::ffi_guard{::SPI_freetuptable}(cctx->batch_tuptab);
 			cctx->batch_tuptab = NULL;
 		}
 
@@ -717,7 +717,7 @@ uplpgsql_rt_fetch_cursor_row(UPLpgSQL_exec_state *estate,
 			else
 				fetch_count = 50;	/* subsequent fetches */
 
-			SPI_cursor_fetch(cctx->portal, true, fetch_count);
+			cppgres::ffi_guard{::SPI_cursor_fetch}(cctx->portal, true, fetch_count);
 		}
 
 		cctx->batch_tuptab = SPI_tuptable;
@@ -730,7 +730,7 @@ uplpgsql_rt_fetch_cursor_row(UPLpgSQL_exec_state *estate,
 			exec_move_row(plstate, target, NULL,
 						  cctx->batch_tuptab->tupdesc);
 			exec_eval_cleanup(plstate);
-			SPI_freetuptable(cctx->batch_tuptab);
+			cppgres::ffi_guard{::SPI_freetuptable}(cctx->batch_tuptab);
 			cctx->batch_tuptab = NULL;
 			return false;
 		}
@@ -777,12 +777,12 @@ uplpgsql_rt_close_portal(UPLpgSQL_exec_state *estate, void *portal_ptr)
 	/* Free any remaining batch from prefetch */
 	if (cctx->batch_tuptab)
 	{
-		SPI_freetuptable(cctx->batch_tuptab);
+		cppgres::ffi_guard{::SPI_freetuptable}(cctx->batch_tuptab);
 		cctx->batch_tuptab = NULL;
 	}
 
 	UnpinPortal(cctx->portal);
-	SPI_cursor_close(cctx->portal);
+	cppgres::ffi_guard{::SPI_cursor_close}(cctx->portal);
 	pfree(cctx);
 }
 
@@ -827,7 +827,7 @@ uplpgsql_rt_close_forc_cursor(UPLpgSQL_exec_state *estate,
 		/* Free any remaining batch from prefetch */
 		if (cctx->batch_tuptab)
 		{
-			SPI_freetuptable(cctx->batch_tuptab);
+			cppgres::ffi_guard{::SPI_freetuptable}(cctx->batch_tuptab);
 			cctx->batch_tuptab = NULL;
 		}
 
