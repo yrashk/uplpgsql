@@ -953,11 +953,9 @@ dump_stmt(UPLpgSQL_stmt *stmt)
 static void
 dump_stmts(List *stmts)
 {
-	ListCell   *s;
-
 	dump_indent += 2;
-	foreach(s, stmts)
-		dump_stmt((UPLpgSQL_stmt *) lfirst(s));
+	for (auto *stmt : cppgres::list<UPLpgSQL_stmt *>(stmts))
+		dump_stmt(stmt);
 	dump_indent -= 2;
 }
 
@@ -978,11 +976,9 @@ dump_block(UPLpgSQL_stmt_block *block)
 
 	if (block->exceptions)
 	{
-		ListCell   *e;
 
-		foreach(e, block->exceptions->exc_list)
+		for (auto *exc : cppgres::list<UPLpgSQL_exception *>(block->exceptions->exc_list))
 		{
-			UPLpgSQL_exception *exc = (UPLpgSQL_exception *) lfirst(e);
 			UPLpgSQL_condition *cond;
 
 			dump_ind();
@@ -1014,16 +1010,14 @@ dump_assign(UPLpgSQL_stmt_assign *stmt)
 static void
 dump_if(UPLpgSQL_stmt_if *stmt)
 {
-	ListCell   *l;
 
 	dump_ind();
 	printf("IF ");
 	dump_expr(stmt->cond);
 	printf(" THEN\n");
 	dump_stmts(stmt->then_body);
-	foreach(l, stmt->elsif_list)
+	for (auto *elif : cppgres::list<UPLpgSQL_if_elsif *>(stmt->elsif_list))
 	{
-		UPLpgSQL_if_elsif *elif = (UPLpgSQL_if_elsif *) lfirst(l);
 
 		dump_ind();
 		printf("    ELSIF ");
@@ -1044,7 +1038,6 @@ dump_if(UPLpgSQL_stmt_if *stmt)
 static void
 dump_case(UPLpgSQL_stmt_case *stmt)
 {
-	ListCell   *l;
 
 	dump_ind();
 	printf("CASE %d ", stmt->t_varno);
@@ -1052,9 +1045,8 @@ dump_case(UPLpgSQL_stmt_case *stmt)
 		dump_expr(stmt->t_expr);
 	printf("\n");
 	dump_indent += 6;
-	foreach(l, stmt->case_when_list)
+	for (auto *cwt : cppgres::list<UPLpgSQL_case_when *>(stmt->case_when_list))
 	{
-		UPLpgSQL_case_when *cwt = (UPLpgSQL_case_when *) lfirst(l);
 
 		dump_ind();
 		printf("WHEN ");
@@ -1219,7 +1211,6 @@ dump_open(UPLpgSQL_stmt_open *stmt)
 
 		if (stmt->params != NIL)
 		{
-			ListCell   *lc;
 			int			i;
 
 			dump_indent += 2;
@@ -1227,11 +1218,11 @@ dump_open(UPLpgSQL_stmt_open *stmt)
 			printf("    USING\n");
 			dump_indent += 2;
 			i = 1;
-			foreach(lc, stmt->params)
+			for (auto *param : cppgres::list<UPLpgSQL_expr *>(stmt->params))
 			{
 				dump_ind();
 				printf("    parameter $%d: ", i++);
-				dump_expr((UPLpgSQL_expr *) lfirst(lc));
+				dump_expr(param);
 				printf("\n");
 			}
 			dump_indent -= 4;
@@ -1405,7 +1396,6 @@ dump_return_query(UPLpgSQL_stmt_return_query *stmt)
 		printf("\n");
 		if (stmt->params != NIL)
 		{
-			ListCell   *lc;
 			int			i;
 
 			dump_indent += 2;
@@ -1413,11 +1403,11 @@ dump_return_query(UPLpgSQL_stmt_return_query *stmt)
 			printf("    USING\n");
 			dump_indent += 2;
 			i = 1;
-			foreach(lc, stmt->params)
+			for (auto *param : cppgres::list<UPLpgSQL_expr *>(stmt->params))
 			{
 				dump_ind();
 				printf("    parameter $%d: ", i++);
-				dump_expr((UPLpgSQL_expr *) lfirst(lc));
+				dump_expr(param);
 				printf("\n");
 			}
 			dump_indent -= 4;
@@ -1428,7 +1418,6 @@ dump_return_query(UPLpgSQL_stmt_return_query *stmt)
 static void
 dump_raise(UPLpgSQL_stmt_raise *stmt)
 {
-	ListCell   *lc;
 	int			i = 0;
 
 	dump_ind();
@@ -1439,11 +1428,11 @@ dump_raise(UPLpgSQL_stmt_raise *stmt)
 		printf(" message='%s'", stmt->message);
 	printf("\n");
 	dump_indent += 2;
-	foreach(lc, stmt->params)
+	for (auto *param : cppgres::list<UPLpgSQL_expr *>(stmt->params))
 	{
 		dump_ind();
 		printf("    parameter %d: ", i++);
-		dump_expr((UPLpgSQL_expr *) lfirst(lc));
+		dump_expr(param);
 		printf("\n");
 	}
 	if (stmt->options)
@@ -1451,9 +1440,8 @@ dump_raise(UPLpgSQL_stmt_raise *stmt)
 		dump_ind();
 		printf("    USING\n");
 		dump_indent += 2;
-		foreach(lc, stmt->options)
+		for (auto *opt : cppgres::list<UPLpgSQL_raise_option *>(stmt->options))
 		{
-			UPLpgSQL_raise_option *opt = (UPLpgSQL_raise_option *) lfirst(lc);
 
 			dump_ind();
 			switch (opt->opt_type)
@@ -1550,18 +1538,17 @@ dump_dynexecute(UPLpgSQL_stmt_dynexecute *stmt)
 	}
 	if (stmt->params != NIL)
 	{
-		ListCell   *lc;
 		int			i;
 
 		dump_ind();
 		printf("    USING\n");
 		dump_indent += 2;
 		i = 1;
-		foreach(lc, stmt->params)
+		for (auto *param : cppgres::list<UPLpgSQL_expr *>(stmt->params))
 		{
 			dump_ind();
 			printf("    parameter %d: ", i++);
-			dump_expr((UPLpgSQL_expr *) lfirst(lc));
+			dump_expr(param);
 			printf("\n");
 		}
 		dump_indent -= 2;
@@ -1578,7 +1565,6 @@ dump_dynfors(UPLpgSQL_stmt_dynfors *stmt)
 	printf("\n");
 	if (stmt->params != NIL)
 	{
-		ListCell   *lc;
 		int			i;
 
 		dump_indent += 2;
@@ -1586,11 +1572,11 @@ dump_dynfors(UPLpgSQL_stmt_dynfors *stmt)
 		printf("    USING\n");
 		dump_indent += 2;
 		i = 1;
-		foreach(lc, stmt->params)
+		for (auto *param : cppgres::list<UPLpgSQL_expr *>(stmt->params))
 		{
 			dump_ind();
 			printf("    parameter $%d: ", i++);
-			dump_expr((UPLpgSQL_expr *) lfirst(lc));
+			dump_expr(param);
 			printf("\n");
 		}
 		dump_indent -= 4;
@@ -1603,16 +1589,15 @@ dump_dynfors(UPLpgSQL_stmt_dynfors *stmt)
 static void
 dump_getdiag(UPLpgSQL_stmt_getdiag *stmt)
 {
-	ListCell   *lc;
+	bool		first = true;
 
 	dump_ind();
 	printf("GET %s DIAGNOSTICS ", stmt->is_stacked ? "STACKED" : "CURRENT");
-	foreach(lc, stmt->diag_items)
+	for (auto *diag_item : cppgres::list<UPLpgSQL_diag_item *>(stmt->diag_items))
 	{
-		UPLpgSQL_diag_item *diag_item = (UPLpgSQL_diag_item *) lfirst(lc);
-
-		if (lc != list_head(stmt->diag_items))
+		if (!first)
 			printf(", ");
+		first = false;
 
 		printf("{var %d} = %s", diag_item->target,
 			   uplpgsql_getdiag_kindname(diag_item->kind));

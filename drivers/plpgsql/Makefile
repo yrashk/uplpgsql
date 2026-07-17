@@ -30,6 +30,13 @@ REGRESS_OPTS = --load-extension=uplpgsql \
 # Shared code is in libupl_common.a and libupl_core.a.
 OBJS = uplpgsql_handler.o upl_scanner.o upl_gram.o
 
+# The generated parser is checked in (regenerated with stock Bison 2.3;
+# newer Bison also works).  Regenerate explicitly with "make grammar" after
+# editing upl_gram.y.
+.PHONY: grammar
+grammar:
+	bison --defines=upl_gram.h -o upl_gram.cpp upl_gram.y
+
 # LLVM configuration
 # Prefer an llvm-config on PATH (Linux, and macOS with LLVM on PATH); fall
 # back to the Homebrew location.  Override with UPL_LLVM_CONFIG=... if needed.

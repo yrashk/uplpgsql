@@ -391,6 +391,7 @@ extern "C" {
 #endif
 
 #include "upl_plpgsql.h"
+#include "cppgres.hpp"
 
 #include "upl_gram.h"
 
@@ -506,7 +507,7 @@ static	void			check_raise_parameters(UPLpgSQL_stmt_raise *stmt);
 
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 typedef union YYSTYPE
-#line 157 "upl_gram.y"
+#line 158 "upl_gram.y"
 {
 	core_YYSTYPE core_yystype;
 	/* these fields must match core_YYSTYPE: */
@@ -558,7 +559,7 @@ typedef union YYSTYPE
 	UPLpgSQL_case_when *casewhen;
 }
 /* Line 193 of yacc.c.  */
-#line 562 "upl_gram.cpp"
+#line 563 "upl_gram.cpp.new"
 	YYSTYPE;
 # define yystype YYSTYPE /* obsolescent; will be withdrawn */
 # define YYSTYPE_IS_DECLARED 1
@@ -583,7 +584,7 @@ typedef struct YYLTYPE
 
 
 /* Line 216 of yacc.c.  */
-#line 587 "upl_gram.cpp"
+#line 588 "upl_gram.cpp.new"
 
 #ifdef short
 # undef short
@@ -965,32 +966,32 @@ static const yytype_int16 yyrhs[] =
 /* YYRLINE[YYN] -- source line where rule number YYN was defined.  */
 static const yytype_uint16 yyrline[] =
 {
-       0,   391,   391,   398,   399,   402,   406,   415,   419,   423,
-     429,   433,   438,   439,   442,   466,   474,   481,   490,   502,
-     503,   506,   507,   511,   524,   566,   572,   571,   598,   601,
-     605,   612,   618,   621,   652,   656,   662,   670,   671,   673,
-     688,   703,   731,   759,   790,   791,   796,   808,   809,   814,
-     819,   826,   827,   831,   833,   839,   840,   848,   849,   853,
-     854,   864,   866,   868,   870,   872,   874,   876,   878,   880,
-     882,   884,   886,   888,   890,   892,   894,   896,   898,   900,
-     902,   904,   906,   908,   910,   914,   951,   969,   990,  1031,
-    1095,  1098,  1102,  1108,  1112,  1118,  1131,  1178,  1196,  1201,
-    1208,  1226,  1229,  1243,  1246,  1252,  1259,  1273,  1277,  1283,
-    1295,  1298,  1313,  1331,  1351,  1385,  1644,  1672,  1686,  1693,
-    1732,  1735,  1741,  1794,  1798,  1804,  1830,  1976,  2000,  2018,
-    2022,  2026,  2030,  2041,  2054,  2120,  2199,  2229,  2242,  2247,
-    2261,  2268,  2282,  2297,  2298,  2299,  2303,  2325,  2330,  2338,
-    2340,  2339,  2383,  2387,  2393,  2406,  2415,  2421,  2458,  2462,
-    2466,  2470,  2474,  2482,  2486,  2494,  2497,  2504,  2506,  2513,
-    2517,  2521,  2530,  2531,  2532,  2533,  2534,  2535,  2536,  2537,
-    2538,  2539,  2540,  2541,  2542,  2543,  2544,  2545,  2546,  2547,
-    2548,  2549,  2550,  2551,  2552,  2553,  2554,  2555,  2556,  2557,
-    2558,  2559,  2560,  2561,  2562,  2563,  2564,  2565,  2566,  2567,
-    2568,  2569,  2570,  2571,  2572,  2573,  2574,  2575,  2576,  2577,
-    2578,  2579,  2580,  2581,  2582,  2583,  2584,  2585,  2586,  2587,
-    2588,  2589,  2590,  2591,  2592,  2593,  2594,  2595,  2596,  2597,
-    2598,  2599,  2600,  2601,  2602,  2603,  2604,  2605,  2606,  2607,
-    2608,  2609,  2610,  2611,  2612,  2613
+       0,   400,   400,   407,   408,   411,   415,   424,   428,   432,
+     438,   442,   447,   448,   451,   475,   483,   490,   499,   511,
+     512,   515,   516,   520,   533,   575,   581,   580,   607,   610,
+     614,   621,   627,   630,   659,   663,   669,   677,   678,   680,
+     695,   710,   738,   766,   797,   798,   803,   815,   816,   821,
+     826,   833,   834,   838,   840,   846,   847,   855,   856,   860,
+     861,   871,   873,   875,   877,   879,   881,   883,   885,   887,
+     889,   891,   893,   895,   897,   899,   901,   903,   905,   907,
+     909,   911,   913,   915,   917,   921,   958,   976,   997,  1038,
+    1100,  1103,  1107,  1113,  1117,  1123,  1136,  1183,  1201,  1206,
+    1213,  1231,  1234,  1248,  1251,  1257,  1264,  1278,  1282,  1288,
+    1300,  1303,  1318,  1336,  1356,  1390,  1649,  1677,  1691,  1698,
+    1737,  1740,  1746,  1799,  1803,  1809,  1835,  1981,  2005,  2023,
+    2027,  2031,  2035,  2046,  2059,  2125,  2204,  2234,  2247,  2252,
+    2266,  2273,  2287,  2302,  2303,  2304,  2308,  2330,  2335,  2343,
+    2345,  2344,  2388,  2392,  2398,  2411,  2420,  2426,  2463,  2467,
+    2471,  2475,  2479,  2487,  2491,  2499,  2502,  2509,  2511,  2518,
+    2522,  2526,  2535,  2536,  2537,  2538,  2539,  2540,  2541,  2542,
+    2543,  2544,  2545,  2546,  2547,  2548,  2549,  2550,  2551,  2552,
+    2553,  2554,  2555,  2556,  2557,  2558,  2559,  2560,  2561,  2562,
+    2563,  2564,  2565,  2566,  2567,  2568,  2569,  2570,  2571,  2572,
+    2573,  2574,  2575,  2576,  2577,  2578,  2579,  2580,  2581,  2582,
+    2583,  2584,  2585,  2586,  2587,  2588,  2589,  2590,  2591,  2592,
+    2593,  2594,  2595,  2596,  2597,  2598,  2599,  2600,  2601,  2602,
+    2603,  2604,  2605,  2606,  2607,  2608,  2609,  2610,  2611,  2612,
+    2613,  2614,  2615,  2616,  2617,  2618
 };
 #endif
 
@@ -2405,7 +2406,7 @@ yyreduce:
   switch (yyn)
     {
         case 2:
-#line 400 "upl_gram.y"
+#line 401 "upl_gram.y"
     {
 						*uplpgsql_parse_result_p = (UPLpgSQL_stmt_block *) (yyvsp[(2) - (3)].stmt);
 						(void) yynerrs;		/* suppress compiler warning */
@@ -2413,14 +2414,14 @@ yyreduce:
     break;
 
   case 5:
-#line 411 "upl_gram.y"
+#line 412 "upl_gram.y"
     {
 						uplpgsql_DumpExecTree = true;
 					;}
     break;
 
   case 6:
-#line 415 "upl_gram.y"
+#line 416 "upl_gram.y"
     {
 						if (strcmp((yyvsp[(3) - (3)].str), "on") == 0)
 							uplpgsql_curr_compile->print_strict_params = true;
@@ -2432,42 +2433,42 @@ yyreduce:
     break;
 
   case 7:
-#line 424 "upl_gram.y"
+#line 425 "upl_gram.y"
     {
 						uplpgsql_curr_compile->resolve_option = UPLPGSQL_RESOLVE_ERROR;
 					;}
     break;
 
   case 8:
-#line 428 "upl_gram.y"
+#line 429 "upl_gram.y"
     {
 						uplpgsql_curr_compile->resolve_option = UPLPGSQL_RESOLVE_VARIABLE;
 					;}
     break;
 
   case 9:
-#line 432 "upl_gram.y"
+#line 433 "upl_gram.y"
     {
 						uplpgsql_curr_compile->resolve_option = UPLPGSQL_RESOLVE_COLUMN;
 					;}
     break;
 
   case 10:
-#line 438 "upl_gram.y"
+#line 439 "upl_gram.y"
     {
 					(yyval.str) = (yyvsp[(1) - (1)].word).ident;
 				;}
     break;
 
   case 11:
-#line 442 "upl_gram.y"
+#line 443 "upl_gram.y"
     {
 					(yyval.str) = pstrdup((yyvsp[(1) - (1)].keyword));
 				;}
     break;
 
   case 14:
-#line 451 "upl_gram.y"
+#line 452 "upl_gram.y"
     {
 						UPLpgSQL_stmt_block *newp;
 
@@ -2491,7 +2492,7 @@ yyreduce:
     break;
 
   case 15:
-#line 475 "upl_gram.y"
+#line 476 "upl_gram.y"
     {
 						/* done with decls, so resume identifier lookup */
 						uplpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
@@ -2502,7 +2503,7 @@ yyreduce:
     break;
 
   case 16:
-#line 483 "upl_gram.y"
+#line 484 "upl_gram.y"
     {
 						uplpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
 						(yyval.declhdr).label	  = (yyvsp[(1) - (2)].str);
@@ -2512,7 +2513,7 @@ yyreduce:
     break;
 
   case 17:
-#line 490 "upl_gram.y"
+#line 491 "upl_gram.y"
     {
 						uplpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
 						(yyval.declhdr).label	  = (yyvsp[(1) - (3)].str);
@@ -2522,7 +2523,7 @@ yyreduce:
     break;
 
   case 18:
-#line 499 "upl_gram.y"
+#line 500 "upl_gram.y"
     {
 						/* Forget any variables created before block */
 						uplpgsql_add_initdatums(NULL);
@@ -2535,14 +2536,14 @@ yyreduce:
     break;
 
   case 22:
-#line 516 "upl_gram.y"
+#line 517 "upl_gram.y"
     {
 						/* We allow useless extra DECLAREs */
 					;}
     break;
 
   case 23:
-#line 520 "upl_gram.y"
+#line 521 "upl_gram.y"
     {
 						/*
 						 * Throw a helpful error if user tries to put block
@@ -2556,7 +2557,7 @@ yyreduce:
     break;
 
   case 24:
-#line 533 "upl_gram.y"
+#line 534 "upl_gram.y"
     {
 						UPLpgSQL_variable	*var;
 
@@ -2601,7 +2602,7 @@ yyreduce:
     break;
 
   case 25:
-#line 575 "upl_gram.y"
+#line 576 "upl_gram.y"
     {
 						uplpgsql_ns_additem((yyvsp[(4) - (5)].nsitem)->itemtype,
 										   (yyvsp[(4) - (5)].nsitem)->itemno, (yyvsp[(1) - (5)].varname).name);
@@ -2609,12 +2610,12 @@ yyreduce:
     break;
 
   case 26:
-#line 580 "upl_gram.y"
+#line 581 "upl_gram.y"
     { uplpgsql_ns_push((yyvsp[(1) - (3)].varname).name, UPLPGSQL_LABEL_OTHER); ;}
     break;
 
   case 27:
-#line 582 "upl_gram.y"
+#line 583 "upl_gram.y"
     {
 						UPLpgSQL_var *newp;
 
@@ -2639,46 +2640,45 @@ yyreduce:
     break;
 
   case 28:
-#line 606 "upl_gram.y"
+#line 607 "upl_gram.y"
     {
 						(yyval.ival) = 0;
 					;}
     break;
 
   case 29:
-#line 610 "upl_gram.y"
+#line 611 "upl_gram.y"
     {
 						(yyval.ival) = CURSOR_OPT_NO_SCROLL;
 					;}
     break;
 
   case 30:
-#line 614 "upl_gram.y"
+#line 615 "upl_gram.y"
     {
 						(yyval.ival) = CURSOR_OPT_SCROLL;
 					;}
     break;
 
   case 31:
-#line 620 "upl_gram.y"
+#line 621 "upl_gram.y"
     {
 						(yyval.expr) = read_sql_stmt(&yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 32:
-#line 626 "upl_gram.y"
+#line 627 "upl_gram.y"
     {
 						(yyval.datum) = NULL;
 					;}
     break;
 
   case 33:
-#line 630 "upl_gram.y"
+#line 631 "upl_gram.y"
     {
 						UPLpgSQL_row *newp;
 						int			i;
-						ListCell   *l;
 
 						newp = palloc0_object(UPLpgSQL_row);
 						newp->dtype = UPLPGSQL_DTYPE_ROW;
@@ -2690,9 +2690,8 @@ yyreduce:
 						newp->varnos = palloc_array(int, newp->nfields);
 
 						i = 0;
-						foreach (l, (yyvsp[(2) - (3)].list))
+						for (auto *arg : cppgres::list<UPLpgSQL_variable *>((yyvsp[(2) - (3)].list)))
 						{
-							UPLpgSQL_variable *arg = (UPLpgSQL_variable *) lfirst(l);
 							Assert(!arg->isconst);
 							newp->fieldnames[i] = arg->refname;
 							newp->varnos[i] = arg->dno;
@@ -2706,21 +2705,21 @@ yyreduce:
     break;
 
   case 34:
-#line 661 "upl_gram.y"
+#line 660 "upl_gram.y"
     {
 						(yyval.list) = list_make1((yyvsp[(1) - (1)].datum));
 					;}
     break;
 
   case 35:
-#line 665 "upl_gram.y"
+#line 664 "upl_gram.y"
     {
 						(yyval.list) = lappend((yyvsp[(1) - (3)].list), (yyvsp[(3) - (3)].datum));
 					;}
     break;
 
   case 36:
-#line 671 "upl_gram.y"
+#line 670 "upl_gram.y"
     {
 						(yyval.datum) = (UPLpgSQL_datum *)
 							uplpgsql_build_variable((yyvsp[(1) - (2)].varname).name, (yyvsp[(1) - (2)].varname).lineno,
@@ -2729,7 +2728,7 @@ yyreduce:
     break;
 
   case 39:
-#line 682 "upl_gram.y"
+#line 681 "upl_gram.y"
     {
 						UPLpgSQL_nsitem *nsi;
 
@@ -2747,7 +2746,7 @@ yyreduce:
     break;
 
   case 40:
-#line 697 "upl_gram.y"
+#line 696 "upl_gram.y"
     {
 						UPLpgSQL_nsitem *nsi;
 
@@ -2765,7 +2764,7 @@ yyreduce:
     break;
 
   case 41:
-#line 712 "upl_gram.y"
+#line 711 "upl_gram.y"
     {
 						UPLpgSQL_nsitem *nsi;
 
@@ -2794,7 +2793,7 @@ yyreduce:
     break;
 
   case 42:
-#line 740 "upl_gram.y"
+#line 739 "upl_gram.y"
     {
 						(yyval.varname).name = (yyvsp[(1) - (1)].word).ident;
 						(yyval.varname).lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
@@ -2825,7 +2824,7 @@ yyreduce:
     break;
 
   case 43:
-#line 768 "upl_gram.y"
+#line 767 "upl_gram.y"
     {
 						(yyval.varname).name = pstrdup((yyvsp[(1) - (1)].keyword));
 						(yyval.varname).lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
@@ -2856,17 +2855,17 @@ yyreduce:
     break;
 
   case 44:
-#line 798 "upl_gram.y"
+#line 797 "upl_gram.y"
     { (yyval.boolean) = false; ;}
     break;
 
   case 45:
-#line 800 "upl_gram.y"
+#line 799 "upl_gram.y"
     { (yyval.boolean) = true; ;}
     break;
 
   case 46:
-#line 804 "upl_gram.y"
+#line 803 "upl_gram.y"
     {
 						/*
 						 * If there's a lookahead token, read_datatype() will
@@ -2879,12 +2878,12 @@ yyreduce:
     break;
 
   case 47:
-#line 816 "upl_gram.y"
+#line 815 "upl_gram.y"
     { (yyval.oid) = InvalidOid; ;}
     break;
 
   case 48:
-#line 818 "upl_gram.y"
+#line 817 "upl_gram.y"
     {
 						(yyval.oid) = get_collation_oid(list_make1(makeString((yyvsp[(2) - (2)].word).ident)),
 											   false);
@@ -2892,7 +2891,7 @@ yyreduce:
     break;
 
   case 49:
-#line 823 "upl_gram.y"
+#line 822 "upl_gram.y"
     {
 						(yyval.oid) = get_collation_oid(list_make1(makeString(pstrdup((yyvsp[(2) - (2)].keyword)))),
 											   false);
@@ -2900,41 +2899,41 @@ yyreduce:
     break;
 
   case 50:
-#line 828 "upl_gram.y"
+#line 827 "upl_gram.y"
     {
 						(yyval.oid) = get_collation_oid((yyvsp[(2) - (2)].cword).idents, false);
 					;}
     break;
 
   case 51:
-#line 834 "upl_gram.y"
+#line 833 "upl_gram.y"
     { (yyval.boolean) = false; ;}
     break;
 
   case 52:
-#line 836 "upl_gram.y"
+#line 835 "upl_gram.y"
     { (yyval.boolean) = true; ;}
     break;
 
   case 53:
-#line 840 "upl_gram.y"
+#line 839 "upl_gram.y"
     { (yyval.expr) = NULL; ;}
     break;
 
   case 54:
-#line 842 "upl_gram.y"
+#line 841 "upl_gram.y"
     {
 						(yyval.expr) = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 59:
-#line 861 "upl_gram.y"
+#line 860 "upl_gram.y"
     { (yyval.list) = NIL; ;}
     break;
 
   case 60:
-#line 863 "upl_gram.y"
+#line 862 "upl_gram.y"
     {
 						/* don't bother linking null statements into list */
 						if ((yyvsp[(2) - (2)].stmt) == NULL)
@@ -2945,127 +2944,127 @@ yyreduce:
     break;
 
   case 61:
-#line 873 "upl_gram.y"
+#line 872 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (2)].stmt); ;}
     break;
 
   case 62:
-#line 875 "upl_gram.y"
+#line 874 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 63:
-#line 877 "upl_gram.y"
+#line 876 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 64:
-#line 879 "upl_gram.y"
+#line 878 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 65:
-#line 881 "upl_gram.y"
+#line 880 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 66:
-#line 883 "upl_gram.y"
+#line 882 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 67:
-#line 885 "upl_gram.y"
+#line 884 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 68:
-#line 887 "upl_gram.y"
+#line 886 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 69:
-#line 889 "upl_gram.y"
+#line 888 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 70:
-#line 891 "upl_gram.y"
+#line 890 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 71:
-#line 893 "upl_gram.y"
+#line 892 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 72:
-#line 895 "upl_gram.y"
+#line 894 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 73:
-#line 897 "upl_gram.y"
+#line 896 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 74:
-#line 899 "upl_gram.y"
+#line 898 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 75:
-#line 901 "upl_gram.y"
+#line 900 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 76:
-#line 903 "upl_gram.y"
+#line 902 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 77:
-#line 905 "upl_gram.y"
+#line 904 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 78:
-#line 907 "upl_gram.y"
+#line 906 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 79:
-#line 909 "upl_gram.y"
+#line 908 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 80:
-#line 911 "upl_gram.y"
+#line 910 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 81:
-#line 913 "upl_gram.y"
+#line 912 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 82:
-#line 915 "upl_gram.y"
+#line 914 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 83:
-#line 917 "upl_gram.y"
+#line 916 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 84:
-#line 919 "upl_gram.y"
+#line 918 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
   case 85:
-#line 923 "upl_gram.y"
+#line 922 "upl_gram.y"
     {
 						UPLpgSQL_stmt_perform *newp;
 						int			startloc;
@@ -3103,7 +3102,7 @@ yyreduce:
     break;
 
   case 86:
-#line 960 "upl_gram.y"
+#line 959 "upl_gram.y"
     {
 						UPLpgSQL_stmt_call *newp;
 
@@ -3124,7 +3123,7 @@ yyreduce:
     break;
 
   case 87:
-#line 978 "upl_gram.y"
+#line 977 "upl_gram.y"
     {
 						/* use the same structures as for CALL, for simplicity */
 						UPLpgSQL_stmt_call *newp;
@@ -3146,7 +3145,7 @@ yyreduce:
     break;
 
   case 88:
-#line 999 "upl_gram.y"
+#line 998 "upl_gram.y"
     {
 						UPLpgSQL_stmt_assign *newp;
 						RawParseMode pmode;
@@ -3188,10 +3187,9 @@ yyreduce:
     break;
 
   case 89:
-#line 1040 "upl_gram.y"
+#line 1039 "upl_gram.y"
     {
 						UPLpgSQL_stmt_getdiag *newp;
-						ListCell	   *lc;
 
 						newp = palloc0_object(UPLpgSQL_stmt_getdiag);
 						newp->cmd_type = UPLPGSQL_STMT_GETDIAG;
@@ -3203,9 +3201,8 @@ yyreduce:
 						/*
 						 * Check information items are valid for area option.
 						 */
-						foreach(lc, newp->diag_items)
+						for (auto *ditem : cppgres::list<UPLpgSQL_diag_item *>(newp->diag_items))
 						{
-							UPLpgSQL_diag_item *ditem = (UPLpgSQL_diag_item *) lfirst(lc);
 
 							switch (ditem->kind)
 							{
@@ -3252,42 +3249,42 @@ yyreduce:
     break;
 
   case 90:
-#line 1103 "upl_gram.y"
+#line 1100 "upl_gram.y"
     {
 						(yyval.boolean) = false;
 					;}
     break;
 
   case 91:
-#line 1107 "upl_gram.y"
+#line 1104 "upl_gram.y"
     {
 						(yyval.boolean) = false;
 					;}
     break;
 
   case 92:
-#line 1111 "upl_gram.y"
+#line 1108 "upl_gram.y"
     {
 						(yyval.boolean) = true;
 					;}
     break;
 
   case 93:
-#line 1117 "upl_gram.y"
+#line 1114 "upl_gram.y"
     {
 						(yyval.list) = lappend((yyvsp[(1) - (3)].list), (yyvsp[(3) - (3)].diagitem));
 					;}
     break;
 
   case 94:
-#line 1121 "upl_gram.y"
+#line 1118 "upl_gram.y"
     {
 						(yyval.list) = list_make1((yyvsp[(1) - (1)].diagitem));
 					;}
     break;
 
   case 95:
-#line 1127 "upl_gram.y"
+#line 1124 "upl_gram.y"
     {
 						UPLpgSQL_diag_item *newp;
 
@@ -3300,7 +3297,7 @@ yyreduce:
     break;
 
   case 96:
-#line 1139 "upl_gram.y"
+#line 1136 "upl_gram.y"
     {
 						int			tok = yylex(&yylval, &yylloc, yyscanner);
 
@@ -3349,7 +3346,7 @@ yyreduce:
     break;
 
   case 97:
-#line 1187 "upl_gram.y"
+#line 1184 "upl_gram.y"
     {
 						/*
 						 * In principle we should support a getdiag_target
@@ -3370,7 +3367,7 @@ yyreduce:
     break;
 
   case 98:
-#line 1205 "upl_gram.y"
+#line 1202 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						word_is_not_variable(&((yyvsp[(1) - (1)].word)), (yylsp[(1) - (1)]), yyscanner);
@@ -3378,7 +3375,7 @@ yyreduce:
     break;
 
   case 99:
-#line 1210 "upl_gram.y"
+#line 1207 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						cword_is_not_variable(&((yyvsp[(1) - (1)].cword)), (yylsp[(1) - (1)]), yyscanner);
@@ -3386,7 +3383,7 @@ yyreduce:
     break;
 
   case 100:
-#line 1217 "upl_gram.y"
+#line 1214 "upl_gram.y"
     {
 						UPLpgSQL_stmt_if *newp;
 
@@ -3404,14 +3401,14 @@ yyreduce:
     break;
 
   case 101:
-#line 1234 "upl_gram.y"
+#line 1231 "upl_gram.y"
     {
 						(yyval.list) = NIL;
 					;}
     break;
 
   case 102:
-#line 1238 "upl_gram.y"
+#line 1235 "upl_gram.y"
     {
 						UPLpgSQL_if_elsif *newp;
 
@@ -3425,28 +3422,28 @@ yyreduce:
     break;
 
   case 103:
-#line 1251 "upl_gram.y"
+#line 1248 "upl_gram.y"
     {
 						(yyval.list) = NIL;
 					;}
     break;
 
   case 104:
-#line 1255 "upl_gram.y"
+#line 1252 "upl_gram.y"
     {
 						(yyval.list) = (yyvsp[(2) - (2)].list);
 					;}
     break;
 
   case 105:
-#line 1261 "upl_gram.y"
+#line 1258 "upl_gram.y"
     {
 						(yyval.stmt) = make_case((yylsp[(1) - (7)]), (yyvsp[(2) - (7)].expr), (yyvsp[(3) - (7)].list), (yyvsp[(4) - (7)].list), yyscanner);
 					;}
     break;
 
   case 106:
-#line 1267 "upl_gram.y"
+#line 1264 "upl_gram.y"
     {
 						UPLpgSQL_expr *expr = NULL;
 						int			tok = yylex(&yylval, &yylloc, yyscanner);
@@ -3462,21 +3459,21 @@ yyreduce:
     break;
 
   case 107:
-#line 1282 "upl_gram.y"
+#line 1279 "upl_gram.y"
     {
 						(yyval.list) = lappend((yyvsp[(1) - (2)].list), (yyvsp[(2) - (2)].casewhen));
 					;}
     break;
 
   case 108:
-#line 1286 "upl_gram.y"
+#line 1283 "upl_gram.y"
     {
 						(yyval.list) = list_make1((yyvsp[(1) - (1)].casewhen));
 					;}
     break;
 
   case 109:
-#line 1292 "upl_gram.y"
+#line 1289 "upl_gram.y"
     {
 						UPLpgSQL_case_when *newp = palloc_object(UPLpgSQL_case_when);
 
@@ -3488,14 +3485,14 @@ yyreduce:
     break;
 
   case 110:
-#line 1303 "upl_gram.y"
+#line 1300 "upl_gram.y"
     {
 						(yyval.list) = NIL;
 					;}
     break;
 
   case 111:
-#line 1307 "upl_gram.y"
+#line 1304 "upl_gram.y"
     {
 						/*
 						 * proc_sect could return an empty list, but we
@@ -3511,7 +3508,7 @@ yyreduce:
     break;
 
   case 112:
-#line 1322 "upl_gram.y"
+#line 1319 "upl_gram.y"
     {
 						UPLpgSQL_stmt_loop *newp;
 
@@ -3530,7 +3527,7 @@ yyreduce:
     break;
 
   case 113:
-#line 1340 "upl_gram.y"
+#line 1337 "upl_gram.y"
     {
 						UPLpgSQL_stmt_while *newp;
 
@@ -3551,7 +3548,7 @@ yyreduce:
     break;
 
   case 114:
-#line 1360 "upl_gram.y"
+#line 1357 "upl_gram.y"
     {
 						/* This runs after we've scanned the loop body */
 						if ((yyvsp[(3) - (4)].stmt)->cmd_type == UPLPGSQL_STMT_FORI)
@@ -3586,7 +3583,7 @@ yyreduce:
     break;
 
   case 115:
-#line 1394 "upl_gram.y"
+#line 1391 "upl_gram.y"
     {
 						int			tok = yylex(&yylval, &yylloc, yyscanner);
 						int			tokloc = yylloc;
@@ -3828,7 +3825,7 @@ yyreduce:
     break;
 
   case 116:
-#line 1653 "upl_gram.y"
+#line 1650 "upl_gram.y"
     {
 						(yyval.forvariable).name = NameOfDatum(&((yyvsp[(1) - (1)].wdatum)));
 						(yyval.forvariable).lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
@@ -3859,7 +3856,7 @@ yyreduce:
     break;
 
   case 117:
-#line 1681 "upl_gram.y"
+#line 1678 "upl_gram.y"
     {
 						int			tok;
 
@@ -3876,7 +3873,7 @@ yyreduce:
     break;
 
   case 118:
-#line 1695 "upl_gram.y"
+#line 1692 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						cword_is_not_variable(&((yyvsp[(1) - (1)].cword)), (yylsp[(1) - (1)]), yyscanner);
@@ -3884,7 +3881,7 @@ yyreduce:
     break;
 
   case 119:
-#line 1702 "upl_gram.y"
+#line 1699 "upl_gram.y"
     {
 						UPLpgSQL_stmt_foreach_a *newp;
 
@@ -3923,21 +3920,21 @@ yyreduce:
     break;
 
   case 120:
-#line 1740 "upl_gram.y"
+#line 1737 "upl_gram.y"
     {
 						(yyval.ival) = 0;
 					;}
     break;
 
   case 121:
-#line 1744 "upl_gram.y"
+#line 1741 "upl_gram.y"
     {
 						(yyval.ival) = (yyvsp[(2) - (2)].ival);
 					;}
     break;
 
   case 122:
-#line 1750 "upl_gram.y"
+#line 1747 "upl_gram.y"
     {
 						UPLpgSQL_stmt_exit *newp;
 
@@ -3991,21 +3988,21 @@ yyreduce:
     break;
 
   case 123:
-#line 1803 "upl_gram.y"
+#line 1800 "upl_gram.y"
     {
 						(yyval.boolean) = true;
 					;}
     break;
 
   case 124:
-#line 1807 "upl_gram.y"
+#line 1804 "upl_gram.y"
     {
 						(yyval.boolean) = false;
 					;}
     break;
 
   case 125:
-#line 1813 "upl_gram.y"
+#line 1810 "upl_gram.y"
     {
 						int			tok;
 
@@ -4032,7 +4029,7 @@ yyreduce:
     break;
 
   case 126:
-#line 1839 "upl_gram.y"
+#line 1836 "upl_gram.y"
     {
 						UPLpgSQL_stmt_raise *newp;
 						int			tok;
@@ -4179,7 +4176,7 @@ yyreduce:
     break;
 
   case 127:
-#line 1985 "upl_gram.y"
+#line 1982 "upl_gram.y"
     {
 						UPLpgSQL_stmt_assert	*newp;
 						int			tok;
@@ -4204,7 +4201,7 @@ yyreduce:
     break;
 
   case 128:
-#line 2009 "upl_gram.y"
+#line 2006 "upl_gram.y"
     {
 						(yyval.loop_body).stmts = (yyvsp[(1) - (5)].list);
 						(yyval.loop_body).end_label = (yyvsp[(4) - (5)].str);
@@ -4213,28 +4210,28 @@ yyreduce:
     break;
 
   case 129:
-#line 2027 "upl_gram.y"
+#line 2024 "upl_gram.y"
     {
 						(yyval.stmt) = make_execsql_stmt(K_IMPORT, (yylsp[(1) - (1)]), NULL, &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 130:
-#line 2031 "upl_gram.y"
+#line 2028 "upl_gram.y"
     {
 						(yyval.stmt) = make_execsql_stmt(K_INSERT, (yylsp[(1) - (1)]), NULL, &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 131:
-#line 2035 "upl_gram.y"
+#line 2032 "upl_gram.y"
     {
 						(yyval.stmt) = make_execsql_stmt(K_MERGE, (yylsp[(1) - (1)]), NULL, &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 132:
-#line 2039 "upl_gram.y"
+#line 2036 "upl_gram.y"
     {
 						int			tok;
 
@@ -4248,7 +4245,7 @@ yyreduce:
     break;
 
   case 133:
-#line 2050 "upl_gram.y"
+#line 2047 "upl_gram.y"
     {
 						int			tok;
 
@@ -4262,7 +4259,7 @@ yyreduce:
     break;
 
   case 134:
-#line 2063 "upl_gram.y"
+#line 2060 "upl_gram.y"
     {
 						UPLpgSQL_stmt_dynexecute *newp;
 						UPLpgSQL_expr *expr;
@@ -4328,7 +4325,7 @@ yyreduce:
     break;
 
   case 135:
-#line 2129 "upl_gram.y"
+#line 2126 "upl_gram.y"
     {
 						UPLpgSQL_stmt_open *newp;
 						int			tok;
@@ -4408,7 +4405,7 @@ yyreduce:
     break;
 
   case 136:
-#line 2208 "upl_gram.y"
+#line 2205 "upl_gram.y"
     {
 						UPLpgSQL_stmt_fetch *fetch = (yyvsp[(2) - (4)].fetch);
 						UPLpgSQL_variable *target;
@@ -4439,7 +4436,7 @@ yyreduce:
     break;
 
   case 137:
-#line 2238 "upl_gram.y"
+#line 2235 "upl_gram.y"
     {
 						UPLpgSQL_stmt_fetch *fetch = (yyvsp[(2) - (4)].fetch);
 
@@ -4452,14 +4449,14 @@ yyreduce:
     break;
 
   case 138:
-#line 2250 "upl_gram.y"
+#line 2247 "upl_gram.y"
     {
 						(yyval.fetch) = read_fetch_direction(&yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 139:
-#line 2256 "upl_gram.y"
+#line 2253 "upl_gram.y"
     {
 						UPLpgSQL_stmt_close *newp;
 
@@ -4474,7 +4471,7 @@ yyreduce:
     break;
 
   case 140:
-#line 2270 "upl_gram.y"
+#line 2267 "upl_gram.y"
     {
 						/* We do not bother building a node for NULL */
 						(yyval.stmt) = NULL;
@@ -4482,7 +4479,7 @@ yyreduce:
     break;
 
   case 141:
-#line 2277 "upl_gram.y"
+#line 2274 "upl_gram.y"
     {
 						UPLpgSQL_stmt_commit *newp;
 
@@ -4497,7 +4494,7 @@ yyreduce:
     break;
 
   case 142:
-#line 2291 "upl_gram.y"
+#line 2288 "upl_gram.y"
     {
 						UPLpgSQL_stmt_rollback *newp;
 
@@ -4512,22 +4509,22 @@ yyreduce:
     break;
 
   case 143:
-#line 2305 "upl_gram.y"
+#line 2302 "upl_gram.y"
     { (yyval.ival) = true; ;}
     break;
 
   case 144:
-#line 2306 "upl_gram.y"
+#line 2303 "upl_gram.y"
     { (yyval.ival) = false; ;}
     break;
 
   case 145:
-#line 2307 "upl_gram.y"
+#line 2304 "upl_gram.y"
     { (yyval.ival) = false; ;}
     break;
 
   case 146:
-#line 2312 "upl_gram.y"
+#line 2309 "upl_gram.y"
     {
 						/*
 						 * In principle we should support a cursor_variable
@@ -4552,7 +4549,7 @@ yyreduce:
     break;
 
   case 147:
-#line 2334 "upl_gram.y"
+#line 2331 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						word_is_not_variable(&((yyvsp[(1) - (1)].word)), (yylsp[(1) - (1)]), yyscanner);
@@ -4560,7 +4557,7 @@ yyreduce:
     break;
 
   case 148:
-#line 2339 "upl_gram.y"
+#line 2336 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						cword_is_not_variable(&((yyvsp[(1) - (1)].cword)), (yylsp[(1) - (1)]), yyscanner);
@@ -4568,12 +4565,12 @@ yyreduce:
     break;
 
   case 149:
-#line 2346 "upl_gram.y"
+#line 2343 "upl_gram.y"
     { (yyval.exception_block) = NULL; ;}
     break;
 
   case 150:
-#line 2348 "upl_gram.y"
+#line 2345 "upl_gram.y"
     {
 						/*
 						 * We use a mid-rule action to add these
@@ -4611,7 +4608,7 @@ yyreduce:
     break;
 
   case 151:
-#line 2383 "upl_gram.y"
+#line 2380 "upl_gram.y"
     {
 						UPLpgSQL_exception_block *newp = (yyvsp[(2) - (3)].exception_block);
 						newp->exc_list = (yyvsp[(3) - (3)].list);
@@ -4621,21 +4618,21 @@ yyreduce:
     break;
 
   case 152:
-#line 2392 "upl_gram.y"
+#line 2389 "upl_gram.y"
     {
 							(yyval.list) = lappend((yyvsp[(1) - (2)].list), (yyvsp[(2) - (2)].exception));
 						;}
     break;
 
   case 153:
-#line 2396 "upl_gram.y"
+#line 2393 "upl_gram.y"
     {
 							(yyval.list) = list_make1((yyvsp[(1) - (1)].exception));
 						;}
     break;
 
   case 154:
-#line 2402 "upl_gram.y"
+#line 2399 "upl_gram.y"
     {
 						UPLpgSQL_exception *newp;
 
@@ -4649,7 +4646,7 @@ yyreduce:
     break;
 
   case 155:
-#line 2415 "upl_gram.y"
+#line 2412 "upl_gram.y"
     {
 							UPLpgSQL_condition	*old;
 
@@ -4661,14 +4658,14 @@ yyreduce:
     break;
 
   case 156:
-#line 2424 "upl_gram.y"
+#line 2421 "upl_gram.y"
     {
 							(yyval.condition) = (yyvsp[(1) - (1)].condition);
 						;}
     break;
 
   case 157:
-#line 2430 "upl_gram.y"
+#line 2427 "upl_gram.y"
     {
 							if (strcmp((yyvsp[(1) - (1)].str), "sqlstate") != 0)
 							{
@@ -4705,22 +4702,22 @@ yyreduce:
     break;
 
   case 158:
-#line 2466 "upl_gram.y"
+#line 2463 "upl_gram.y"
     { (yyval.expr) = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner); ;}
     break;
 
   case 159:
-#line 2470 "upl_gram.y"
+#line 2467 "upl_gram.y"
     { (yyval.expr) = read_sql_expression(K_THEN, "THEN", &yylval, &yylloc, yyscanner); ;}
     break;
 
   case 160:
-#line 2474 "upl_gram.y"
+#line 2471 "upl_gram.y"
     { (yyval.expr) = read_sql_expression(K_LOOP, "LOOP", &yylval, &yylloc, yyscanner); ;}
     break;
 
   case 161:
-#line 2478 "upl_gram.y"
+#line 2475 "upl_gram.y"
     {
 						uplpgsql_ns_push(NULL, UPLPGSQL_LABEL_BLOCK);
 						(yyval.str) = NULL;
@@ -4728,7 +4725,7 @@ yyreduce:
     break;
 
   case 162:
-#line 2483 "upl_gram.y"
+#line 2480 "upl_gram.y"
     {
 						uplpgsql_ns_push((yyvsp[(2) - (3)].str), UPLPGSQL_LABEL_BLOCK);
 						(yyval.str) = (yyvsp[(2) - (3)].str);
@@ -4736,7 +4733,7 @@ yyreduce:
     break;
 
   case 163:
-#line 2490 "upl_gram.y"
+#line 2487 "upl_gram.y"
     {
 						uplpgsql_ns_push(NULL, UPLPGSQL_LABEL_LOOP);
 						(yyval.str) = NULL;
@@ -4744,7 +4741,7 @@ yyreduce:
     break;
 
   case 164:
-#line 2495 "upl_gram.y"
+#line 2492 "upl_gram.y"
     {
 						uplpgsql_ns_push((yyvsp[(2) - (3)].str), UPLPGSQL_LABEL_LOOP);
 						(yyval.str) = (yyvsp[(2) - (3)].str);
@@ -4752,14 +4749,14 @@ yyreduce:
     break;
 
   case 165:
-#line 2502 "upl_gram.y"
+#line 2499 "upl_gram.y"
     {
 						(yyval.str) = NULL;
 					;}
     break;
 
   case 166:
-#line 2506 "upl_gram.y"
+#line 2503 "upl_gram.y"
     {
 						/* label validity will be checked by outer production */
 						(yyval.str) = (yyvsp[(1) - (1)].str);
@@ -4767,31 +4764,31 @@ yyreduce:
     break;
 
   case 167:
-#line 2513 "upl_gram.y"
+#line 2510 "upl_gram.y"
     { (yyval.expr) = NULL; ;}
     break;
 
   case 168:
-#line 2515 "upl_gram.y"
+#line 2512 "upl_gram.y"
     { (yyval.expr) = (yyvsp[(2) - (2)].expr); ;}
     break;
 
   case 169:
-#line 2522 "upl_gram.y"
+#line 2519 "upl_gram.y"
     {
 						(yyval.str) = (yyvsp[(1) - (1)].word).ident;
 					;}
     break;
 
   case 170:
-#line 2526 "upl_gram.y"
+#line 2523 "upl_gram.y"
     {
 						(yyval.str) = pstrdup((yyvsp[(1) - (1)].keyword));
 					;}
     break;
 
   case 171:
-#line 2530 "upl_gram.y"
+#line 2527 "upl_gram.y"
     {
 						if ((yyvsp[(1) - (1)].wdatum).ident == NULL) /* composite name not OK */
 							yyerror(&yylloc, NULL, yyscanner, "syntax error");
@@ -4801,7 +4798,7 @@ yyreduce:
 
 
 /* Line 1267 of yacc.c.  */
-#line 4805 "upl_gram.cpp"
+#line 4802 "upl_gram.cpp.new"
       default: break;
     }
   YY_SYMBOL_PRINT ("-> $$ =", yyr1[yyn], &yyval, &yyloc);
@@ -5021,7 +5018,7 @@ yyreturn:
 }
 
 
-#line 2624 "upl_gram.y"
+#line 2621 "upl_gram.y"
 
 
 /*
@@ -6636,7 +6633,6 @@ make_case(int location, UPLpgSQL_expr *t_expr,
 	{
 		char		varname[32];
 		UPLpgSQL_var *t_var;
-		ListCell   *l;
 
 		/* use a name unlikely to collide with any user names */
 		snprintf(varname, sizeof(varname), "__Case__Variable_%d__",
@@ -6655,9 +6651,8 @@ make_case(int location, UPLpgSQL_expr *t_expr,
 								   true);
 		newp->t_varno = t_var->dno;
 
-		foreach(l, case_when_list)
+		for (auto *cwt : cppgres::list<UPLpgSQL_case_when *>(case_when_list))
 		{
-			UPLpgSQL_case_when *cwt = (UPLpgSQL_case_when *) lfirst(l);
 			UPLpgSQL_expr *expr = cwt->expr;
 			StringInfoData ds;
 

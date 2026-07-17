@@ -50,6 +50,7 @@ extern "C" {
 #endif
 
 #include "upl_plpgsql.h"
+#include "cppgres.hpp"
 
 #include "upl_gram.h"
 
@@ -630,7 +631,6 @@ decl_cursor_args :
 					{
 						UPLpgSQL_row *newp;
 						int			i;
-						ListCell   *l;
 
 						newp = palloc0_object(UPLpgSQL_row);
 						newp->dtype = UPLPGSQL_DTYPE_ROW;
@@ -642,9 +642,8 @@ decl_cursor_args :
 						newp->varnos = palloc_array(int, newp->nfields);
 
 						i = 0;
-						foreach (l, $2)
+						for (auto *arg : cppgres::list<UPLpgSQL_variable *>($2))
 						{
-							UPLpgSQL_variable *arg = (UPLpgSQL_variable *) lfirst(l);
 							Assert(!arg->isconst);
 							newp->fieldnames[i] = arg->refname;
 							newp->varnos[i] = arg->dno;
@@ -1039,7 +1038,6 @@ stmt_assign		: T_DATUM
 stmt_getdiag	: K_GET getdiag_area_opt K_DIAGNOSTICS getdiag_list ';'
 					{
 						UPLpgSQL_stmt_getdiag *newp;
-						ListCell	   *lc;
 
 						newp = palloc0_object(UPLpgSQL_stmt_getdiag);
 						newp->cmd_type = UPLPGSQL_STMT_GETDIAG;
@@ -1051,9 +1049,8 @@ stmt_getdiag	: K_GET getdiag_area_opt K_DIAGNOSTICS getdiag_list ';'
 						/*
 						 * Check information items are valid for area option.
 						 */
-						foreach(lc, newp->diag_items)
+						for (auto *ditem : cppgres::list<UPLpgSQL_diag_item *>(newp->diag_items))
 						{
-							UPLpgSQL_diag_item *ditem = (UPLpgSQL_diag_item *) lfirst(lc);
 
 							switch (ditem->kind)
 							{
@@ -4235,7 +4232,6 @@ make_case(int location, UPLpgSQL_expr *t_expr,
 	{
 		char		varname[32];
 		UPLpgSQL_var *t_var;
-		ListCell   *l;
 
 		/* use a name unlikely to collide with any user names */
 		snprintf(varname, sizeof(varname), "__Case__Variable_%d__",
@@ -4254,9 +4250,8 @@ make_case(int location, UPLpgSQL_expr *t_expr,
 								   true);
 		newp->t_varno = t_var->dno;
 
-		foreach(l, case_when_list)
+		for (auto *cwt : cppgres::list<UPLpgSQL_case_when *>(case_when_list))
 		{
-			UPLpgSQL_case_when *cwt = (UPLpgSQL_case_when *) lfirst(l);
 			UPLpgSQL_expr *expr = cwt->expr;
 			StringInfoData ds;
 

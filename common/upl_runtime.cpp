@@ -1266,7 +1266,6 @@ uplpgsql_rt_exception_catch(UPLpgSQL_exec_state *estate,
 		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
 		UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
 		ErrorData  *edata;
-		ListCell   *e;
 		int			handler_idx = 0;
 
 		/* Restore PG_exception_stack and error_context_stack */
@@ -1310,9 +1309,8 @@ uplpgsql_rt_exception_catch(UPLpgSQL_exec_state *estate,
 			 edata, edata->sqlerrcode);
 
 		/* Find matching handler */
-		foreach(e, block->exceptions->exc_list)
+		for (auto *exception : cppgres::list<UPLpgSQL_exception *>(block->exceptions->exc_list))
 		{
-			UPLpgSQL_exception *exception = (UPLpgSQL_exception *) lfirst(e);
 
 			if (exception_matches_conditions(edata, exception->conditions))
 				return handler_idx;

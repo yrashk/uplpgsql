@@ -2474,7 +2474,7 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 		catch (cppgres::pg_exception &ex)
 		{
 			ErrorData  *edata;
-			ListCell   *e;
+			bool		handler_matched = false;
 
 			estate->err_text = gettext_noop("during exception cleanup");
 
@@ -2528,9 +2528,8 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 			exec_eval_cleanup(estate);
 
 			/* Look for a matching exception handler */
-			foreach(e, block->exceptions->exc_list)
+			for (auto *exception : cppgres::list<UPLpgSQL_exception *>(block->exceptions->exc_list))
 			{
-				UPLpgSQL_exception *exception = (UPLpgSQL_exception *) lfirst(e);
 
 				if (exception_matches_conditions(edata, exception->conditions))
 				{
@@ -2583,6 +2582,7 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 						return exec_stmts(estate, exception->action);
 					}}();
 
+					handler_matched = true;
 					break;
 				}
 			}
@@ -2600,7 +2600,7 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 			 * over to Postgres to be released when the error has been
 			 * handled.)
 			 */
-			if (e == NULL)
+			if (!handler_matched)
 				ex.rethrow();
 
 			/*
@@ -2668,7 +2668,6 @@ static int
 exec_stmts(UPLpgSQL_execstate *estate, List *stmts)
 {
 	UPLpgSQL_stmt *save_estmt = estate->err_stmt;
-	ListCell   *s;
 
 	if (stmts == NIL)
 	{
@@ -2681,9 +2680,8 @@ exec_stmts(UPLpgSQL_execstate *estate, List *stmts)
 		return UPLPGSQL_RC_OK;
 	}
 
-	foreach(s, stmts)
+	for (auto *stmt : cppgres::list<UPLpgSQL_stmt *>(stmts))
 	{
-		UPLpgSQL_stmt *stmt = (UPLpgSQL_stmt *) lfirst(s);
 		int			rc;
 
 		estate->err_stmt = stmt;
@@ -3102,7 +3100,6 @@ int
 exec_stmt_getdiag(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_getdiag *stmt)
 try
 {
-	ListCell   *lc;
 
 	/*
 	 * GET STACKED DIAGNOSTICS is only valid inside an exception handler.
@@ -3115,9 +3112,8 @@ try
 				(errcode(ERRCODE_STACKED_DIAGNOSTICS_ACCESSED_WITHOUT_ACTIVE_HANDLER),
 				 errmsg("GET STACKED DIAGNOSTICS cannot be used outside an exception handler")));
 
-	foreach(lc, stmt->diag_items)
+	for (auto *diag_item : cppgres::list<UPLpgSQL_diag_item *>(stmt->diag_items))
 	{
-		UPLpgSQL_diag_item *diag_item = (UPLpgSQL_diag_item *) lfirst(lc);
 		UPLpgSQL_datum *var = estate->datums[diag_item->target];
 
 		switch (diag_item->kind)
@@ -3229,16 +3225,14 @@ exec_stmt_if(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_if *stmt)
 {
 	bool		value;
 	bool		isnull;
-	ListCell   *lc;
 
 	value = exec_eval_boolean(estate, stmt->cond, &isnull);
 	exec_eval_cleanup(estate);
 	if (!isnull && value)
 		return exec_stmts(estate, stmt->then_body);
 
-	foreach(lc, stmt->elsif_list)
+	for (auto *elif : cppgres::list<UPLpgSQL_if_elsif *>(stmt->elsif_list))
 	{
-		UPLpgSQL_if_elsif *elif = (UPLpgSQL_if_elsif *) lfirst(lc);
 
 		value = exec_eval_boolean(estate, elif->cond, &isnull);
 		exec_eval_cleanup(estate);
@@ -3259,7 +3253,6 @@ exec_stmt_case(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_case *stmt)
 {
 	UPLpgSQL_var *t_var = NULL;
 	bool		isnull;
-	ListCell   *l;
 
 	if (stmt->t_expr != NULL)
 	{
@@ -3300,9 +3293,8 @@ exec_stmt_case(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_case *stmt)
 	}
 
 	/* Now search for a successful WHEN clause */
-	foreach(l, stmt->case_when_list)
+	for (auto *cwt : cppgres::list<UPLpgSQL_case_when *>(stmt->case_when_list))
 	{
-		UPLpgSQL_case_when *cwt = (UPLpgSQL_case_when *) lfirst(l);
 		bool		value;
 
 		value = exec_eval_boolean(estate, cwt->expr, &isnull);
@@ -4612,7 +4604,6 @@ try
 	char	   *err_table = NULL;
 	char	   *err_schema = NULL;
 	MemoryContext stmt_mcontext;
-	ListCell   *lc;
 
 	/* RAISE with no parameters: re-throw current exception */
 	if (stmt->condname == NULL && stmt->message == NULL &&
@@ -4701,9 +4692,8 @@ try
 		err_message = ds.data;
 	}
 
-	foreach(lc, stmt->options)
+	for (auto *opt : cppgres::list<UPLpgSQL_raise_option *>(stmt->options))
 	{
-		UPLpgSQL_raise_option *opt = (UPLpgSQL_raise_option *) lfirst(lc);
 		Datum		optionvalue;
 		bool		optionisnull;
 		Oid			optiontypeid;
@@ -5118,12 +5108,10 @@ try
 
 	if (!stmt->mod_stmt_set)
 	{
-		ListCell   *l;
-
 		stmt->mod_stmt = false;
-		foreach(l, cppgres::ffi_guard{::SPI_plan_get_plan_sources}(expr->plan))
+		for (auto *plansource : cppgres::list<CachedPlanSource *>(
+				 cppgres::ffi_guard{::SPI_plan_get_plan_sources}(expr->plan)))
 		{
-			CachedPlanSource *plansource = (CachedPlanSource *) lfirst(l);
 
 			/*
 			 * We could look at the raw_parse_tree, but it seems simpler to
@@ -9892,7 +9880,6 @@ exec_eval_using_params(UPLpgSQL_execstate *estate, List *params)
 	MemoryContext stmt_mcontext;
 	MemoryContext oldcontext;
 	int			i;
-	ListCell   *lc;
 
 	/* Fast path for no parameters: we can just return NULL */
 	if (params == NIL)
@@ -9905,9 +9892,8 @@ exec_eval_using_params(UPLpgSQL_execstate *estate, List *params)
 	MemoryContextSwitchTo(oldcontext);
 
 	i = 0;
-	foreach(lc, params)
+	for (auto *param : cppgres::list<UPLpgSQL_expr *>(params))
 	{
-		UPLpgSQL_expr *param = (UPLpgSQL_expr *) lfirst(lc);
 		ParamExternData *prm = &paramLI->params[i];
 		int32		ppdtypmod;
 

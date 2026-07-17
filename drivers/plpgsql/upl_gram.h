@@ -304,7 +304,7 @@
 
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 typedef union YYSTYPE
-#line 132 "upl_gram.y"
+#line 158 "upl_gram.y"
 {
 	core_YYSTYPE core_yystype;
 	/* these fields must match core_YYSTYPE: */
@@ -356,7 +356,7 @@ typedef union YYSTYPE
 	UPLpgSQL_case_when *casewhen;
 }
 /* Line 1529 of yacc.c.  */
-#line 360 "upl_gram.h"
+#line 360 "upl_gram.h.new"
 	YYSTYPE;
 # define yystype YYSTYPE /* obsolescent; will be withdrawn */
 # define YYSTYPE_IS_DECLARED 1
