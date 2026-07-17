@@ -239,13 +239,13 @@ private:
 	void		assign_expr(int varno, void *expr);
 
 	/* native local array analysis / marshalling */
-	void		analyze_native_arrays(UPLpgSQL_function *func);
+	void		analyze_native_arrays();
 	/* returned pointers stay valid: never resized after analyze_native_arrays */
 	UPLpgSQL_native_array *find_native_array(int dno);
-	void		emit_sync_native_array(UPLpgSQL_native_array *na);
+	void		emit_sync_native_array(UPLpgSQL_native_array &na);
 	void		sync_native_arrays();
 	void		sync_native_arrays_for_expr(UPLpgSQL_expr *expr);
-	void		emit_refresh_native_array(UPLpgSQL_native_array *na);
+	void		emit_refresh_native_array(UPLpgSQL_native_array &na);
 
 	/* ---- expression compilation (upl_compile_expr.cpp) ---- */
 

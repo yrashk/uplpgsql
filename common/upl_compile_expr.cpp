@@ -148,13 +148,6 @@ namespace uplpgsql
 static ExprTypeClass classify_expr(Expr *expr);
 static bool can_fmgr_compile(Expr *expr);
 
-/* Helpers */
-static inline llvm::BasicBlock *
-expr_append_block(UPL_compile_ctx *ctx, const char *name)
-{
-	return llvm::BasicBlock::Create(*ctx->context, name, ctx->function);
-}
-
 /*
  * Resolve array element type info at compile time and emit LLVM constants.
  * Avoids repeated get_element_type()/get_typlenbyvalalign() at runtime.
@@ -258,7 +251,7 @@ function_compiler::emit_load_param_datum(llvm::Value *estate_ref, int dno)
 	{
 		elog(DEBUG1, "uplpgsql: native array to_datum dno %d (whole-datum read)",
 			 dno);
-		emit_sync_native_array(na);
+		emit_sync_native_array(*na);
 	}
 
 	/*
@@ -425,7 +418,7 @@ function_compiler::emit_load_param_isnull(llvm::Value *estate_ref, int dno)
 	 */
 	na = find_native_array(dno);
 	if (na != NULL)
-		emit_sync_native_array(na);
+		emit_sync_native_array(*na);
 
 	/* For plain vars: load datum->isnull */
 	{
@@ -477,8 +470,8 @@ emit_native_array_elem_isnull(UPL_compile_ctx *ctx,
 		nulls, llvm::Constant::getNullValue(ctx->types[UPL_PTR]),
 		"na.has.nulls");
 
-	load_bb = expr_append_block(ctx, "na.nulls.load");
-	done_bb = expr_append_block(ctx, "na.nulls.done");
+	load_bb = upl_append_block(ctx, "na.nulls.load");
+	done_bb = upl_append_block(ctx, "na.nulls.done");
 
 	from_bb = builder->GetInsertBlock();
 	builder->CreateCondBr(has_nulls, load_bb, done_bb);
@@ -797,8 +790,8 @@ function_compiler::tier1_compile_value_guarded(Expr *val_expr,
 	else
 		vty = ctx->types[UPL_INT32];
 
-	compute_bb = expr_append_block(ctx, "t1.val.compute");
-	join_bb = expr_append_block(ctx, "t1.val.done");
+	compute_bb = upl_append_block(ctx, "t1.val.compute");
+	join_bb = upl_append_block(ctx, "t1.val.done");
 
 	from_bb = ctx->builder->GetInsertBlock();
 	ctx->builder->CreateCondBr(*isnull_out, join_bb, compute_bb);
@@ -1497,8 +1490,8 @@ function_compiler::emit_set_subscript_null_check(Expr *idx_expr,
 	if (idx_isnull == NULL)
 		return;					/* nothing in the subscript can be NULL */
 
-	null_bb = expr_append_block(ctx, "na.set.idxnull");
-	ok_bb = expr_append_block(ctx, "na.set.idxok");
+	null_bb = upl_append_block(ctx, "na.set.idxnull");
+	ok_bb = upl_append_block(ctx, "na.set.idxok");
 
 	ctx->builder->CreateCondBr(idx_isnull, null_bb, ok_bb);
 
@@ -1563,8 +1556,8 @@ emit_float_error_if(UPL_compile_ctx *ctx, llvm::Value *cond,
 {
 	llvm::BasicBlock	*err_bb, *ok_bb;
 
-	err_bb = expr_append_block(ctx, tag);
-	ok_bb = expr_append_block(ctx, "f8.ok");
+	err_bb = upl_append_block(ctx, tag);
+	ok_bb = upl_append_block(ctx, "f8.ok");
 
 	ctx->builder->CreateCondBr(cond, err_bb, ok_bb);
 
@@ -1788,8 +1781,8 @@ emit_int_arith_checked(UPL_compile_ctx *ctx,
 	value = builder->CreateExtractValue(ovf_result, {0}, "ovf.value");
 	overflow = builder->CreateExtractValue(ovf_result, {1}, "ovf.flag");
 
-	ovf_bb = expr_append_block(ctx, "ovf.error");
-	ok_bb = expr_append_block(ctx, "ovf.ok");
+	ovf_bb = upl_append_block(ctx, "ovf.error");
+	ok_bb = upl_append_block(ctx, "ovf.ok");
 
 	builder->CreateCondBr(overflow, ovf_bb, ok_bb);
 
@@ -1814,9 +1807,9 @@ emit_int_divmod(UPL_compile_ctx *ctx,
 	llvm::Value	*cmp, *result;
 	llvm::BasicBlock *zero_bb, *check_bb, *ok_bb;
 
-	zero_bb = expr_append_block(ctx, "div.zero");
-	check_bb = expr_append_block(ctx, "div.check");
-	ok_bb = expr_append_block(ctx, "div.ok");
+	zero_bb = upl_append_block(ctx, "div.zero");
+	check_bb = upl_append_block(ctx, "div.check");
+	ok_bb = upl_append_block(ctx, "div.ok");
 
 	/* Check divisor != 0 */
 	cmp = builder->CreateICmpEQ(rhs, llvm::ConstantInt::get(int_type, 0, false), "div.iszero");
@@ -1833,8 +1826,8 @@ emit_int_divmod(UPL_compile_ctx *ctx,
 		llvm::Value *is_min, *is_neg1, *is_ovf;
 		llvm::BasicBlock *ovf_bb, *div_bb;
 
-		ovf_bb = expr_append_block(ctx, "div.ovf");
-		div_bb = expr_append_block(ctx, "div.do");
+		ovf_bb = upl_append_block(ctx, "div.ovf");
+		div_bb = upl_append_block(ctx, "div.do");
 
 		is_min = builder->CreateICmpEQ(lhs, llvm::ConstantInt::get(int_type, min_val, false), "is.min");
 		is_neg1 = builder->CreateICmpEQ(rhs,
@@ -1906,8 +1899,8 @@ emit_int_negate(UPL_compile_ctx *ctx, llvm::Value *arg,
 	llvm::BasicBlock *ovf_bb, *ok_bb;
 	llvm::Value *cmp;
 
-	ovf_bb = expr_append_block(ctx, "neg.ovf");
-	ok_bb = expr_append_block(ctx, "neg.ok");
+	ovf_bb = upl_append_block(ctx, "neg.ovf");
+	ok_bb = upl_append_block(ctx, "neg.ok");
 
 	cmp = builder->CreateICmpEQ(arg, llvm::ConstantInt::get(int_type, min_val, false), "neg.ismin");
 	builder->CreateCondBr(cmp, ovf_bb, ok_bb);
@@ -1930,8 +1923,8 @@ emit_int_abs(UPL_compile_ctx *ctx, llvm::Value *arg,
 	llvm::BasicBlock *ovf_bb, *ok_bb;
 	llvm::Value *cmp, *neg;
 
-	ovf_bb = expr_append_block(ctx, "abs.ovf");
-	ok_bb = expr_append_block(ctx, "abs.ok");
+	ovf_bb = upl_append_block(ctx, "abs.ovf");
+	ok_bb = upl_append_block(ctx, "abs.ok");
 
 	cmp = builder->CreateICmpEQ(arg, llvm::ConstantInt::get(int_type, min_val, false), "abs.ismin");
 	builder->CreateCondBr(cmp, ovf_bb, ok_bb);
@@ -3328,9 +3321,9 @@ function_compiler::compile_expr_fmgr_full(Expr *expr,
 					llvm::Value	 *incoming_vals[2];
 					llvm::BasicBlock *incoming_bbs[2];
 
-					call_bb = expr_append_block(ctx, "fmgr.strict.call");
-					skip_bb = expr_append_block(ctx, "fmgr.strict.skip");
-					merge_bb = expr_append_block(ctx, "fmgr.strict.merge");
+					call_bb = upl_append_block(ctx, "fmgr.strict.call");
+					skip_bb = upl_append_block(ctx, "fmgr.strict.skip");
+					merge_bb = upl_append_block(ctx, "fmgr.strict.merge");
 
 					/*
 					 * Check each argument for NULL.  We OR all the isnull
@@ -3775,7 +3768,7 @@ function_compiler::try_compile_assign(UPLpgSQL_stmt_assign *stmt)
 					{
 						elog(DEBUG1, "uplpgsql: native array from_datum dno %d "
 							 "(fmgr bypass assign)", target_na->dno);
-						emit_refresh_native_array(target_na);
+						emit_refresh_native_array(*target_na);
 					}
 				}
 				return true;
@@ -4006,9 +3999,9 @@ function_compiler::try_compile_assign(UPLpgSQL_stmt_assign *stmt)
 			threshold = llvm::ConstantInt::get(i64_ty, NATIVE_ARRAY_STACK_THRESHOLD, false);
 			use_stack = ctx->builder->CreateICmpSLE(byte_size, threshold, "use_stack");
 
-			stack_bb = expr_append_block(ctx, "na.stack");
-			heap_bb = expr_append_block(ctx, "na.heap");
-			merge_bb = expr_append_block(ctx, "na.merge");
+			stack_bb = upl_append_block(ctx, "na.stack");
+			heap_bb = upl_append_block(ctx, "na.heap");
+			merge_bb = upl_append_block(ctx, "na.merge");
 
 			ctx->builder->CreateCondBr(use_stack, stack_bb, heap_bb);
 
@@ -4086,9 +4079,9 @@ function_compiler::try_compile_assign(UPLpgSQL_stmt_assign *stmt)
 						 na->elemtype == INT4OID)
 					fill_val = ctx->builder->CreateTrunc(fill_val, elem_llvm_type, "fill32");
 
-				fill_cond_bb = expr_append_block(ctx, "na.fill.cond");
-				fill_body_bb = expr_append_block(ctx, "na.fill.body");
-				fill_done_bb = expr_append_block(ctx, "na.fill.done");
+				fill_cond_bb = upl_append_block(ctx, "na.fill.cond");
+				fill_body_bb = upl_append_block(ctx, "na.fill.body");
+				fill_done_bb = upl_append_block(ctx, "na.fill.done");
 
 				idx_ptr = ctx->builder->CreateAlloca(i32_ty, nullptr, "fill_idx");
 				ctx->builder->CreateStore(llvm::ConstantInt::get(i32_ty, 0, false), idx_ptr);
@@ -4345,13 +4338,13 @@ not_native_init:
 													"na.set.notnull"),
 							"na.set.ok.nn");
 
-					fast_bb = expr_append_block(ctx, "na.set.fast");
-					miss_bb = expr_append_block(ctx, "na.set.miss");
-					append_bb = expr_append_block(ctx, "na.set.append");
-					grow_bb = expr_append_block(ctx, "na.set.grow");
-					appstore_bb = expr_append_block(ctx, "na.set.appstore");
-					slow_bb = expr_append_block(ctx, "na.set.slow");
-					done_bb = expr_append_block(ctx, "na.set.done");
+					fast_bb = upl_append_block(ctx, "na.set.fast");
+					miss_bb = upl_append_block(ctx, "na.set.miss");
+					append_bb = upl_append_block(ctx, "na.set.append");
+					grow_bb = upl_append_block(ctx, "na.set.grow");
+					appstore_bb = upl_append_block(ctx, "na.set.appstore");
+					slow_bb = upl_append_block(ctx, "na.set.slow");
+					done_bb = upl_append_block(ctx, "na.set.done");
 
 					ctx->builder->CreateCondBr(in_range, fast_bb, miss_bb);
 
@@ -4443,8 +4436,8 @@ not_native_init:
 							llvm::Constant::getNullValue(ctx->types[UPL_PTR]),
 							"na.app.has.nulls");
 
-						aclr_bb = expr_append_block(ctx, "na.app.clrnull");
-						adone_bb = expr_append_block(ctx, "na.app.stored");
+						aclr_bb = upl_append_block(ctx, "na.app.clrnull");
+						adone_bb = upl_append_block(ctx, "na.app.stored");
 						ctx->builder->CreateCondBr(ahas, aclr_bb, adone_bb);
 
 						ctx->builder->SetInsertPoint(aclr_bb);
@@ -4490,8 +4483,8 @@ not_native_init:
 							llvm::Constant::getNullValue(ctx->types[UPL_PTR]),
 							"na.has.nulls");
 
-						clr_bb = expr_append_block(ctx, "na.set.clrnull");
-						after_bb = expr_append_block(ctx, "na.set.stored");
+						clr_bb = upl_append_block(ctx, "na.set.clrnull");
+						after_bb = upl_append_block(ctx, "na.set.stored");
 						ctx->builder->CreateCondBr(has, clr_bb, after_bb);
 
 						ctx->builder->SetInsertPoint(clr_bb);
@@ -4509,7 +4502,7 @@ not_native_init:
 
 					/* Out of range, or not 1-D: let PostgreSQL do it. */
 					ctx->builder->SetInsertPoint(slow_bb);
-					emit_sync_native_array(na);
+					emit_sync_native_array(*na);
 					{
 						ArrayTypeInfo	ati = resolve_array_type_info(array_dno);
 						llvm::Value	*datum_val;
@@ -4534,7 +4527,7 @@ not_native_init:
 							ctx->builder->CreateCall(ctx->rt_funcs[RT_ARRAY_SET_ELEMENT], args, "");
 						}
 					}
-					emit_refresh_native_array(na);
+					emit_refresh_native_array(*na);
 					ctx->builder->CreateBr(done_bb);
 
 					ctx->builder->SetInsertPoint(done_bb);
@@ -4564,8 +4557,8 @@ not_native_init:
 					elog(DEBUG1, "uplpgsql: native array get dno %d[idx] -> dno %d: %s",
 						 array_dno, stmt->varno, stmt->expr->query);
 
-					null_bb = expr_append_block(ctx, "na.get.null");
-					get_done_bb = expr_append_block(ctx, "na.get.done");
+					null_bb = upl_append_block(ctx, "na.get.null");
+					get_done_bb = upl_append_block(ctx, "na.get.done");
 
 					/*
 					 * A NULL subscript reads as SQL NULL — and, as in the
@@ -4584,7 +4577,7 @@ not_native_init:
 						{
 							llvm::BasicBlock *idxok_bb;
 
-							idxok_bb = expr_append_block(ctx, "na.get.idxok");
+							idxok_bb = upl_append_block(ctx, "na.get.idxok");
 							ctx->builder->CreateCondBr(idx_isnull, null_bb, idxok_bb);
 							ctx->builder->SetInsertPoint(idxok_bb);
 						}
@@ -4620,7 +4613,7 @@ not_native_init:
 								"na.above"),
 							"na.oob2");
 
-						val_bb = expr_append_block(ctx, "na.get.val");
+						val_bb = upl_append_block(ctx, "na.get.val");
 
 						ctx->builder->CreateCondBr(oob, null_bb, val_bb);
 
@@ -4687,9 +4680,9 @@ standard_array_path:
 						{
 							llvm::BasicBlock *idxok_bb;
 
-							null_bb = expr_append_block(ctx, "arr.get.null");
-							done_bb = expr_append_block(ctx, "arr.get.done");
-							idxok_bb = expr_append_block(ctx, "arr.get.idxok");
+							null_bb = upl_append_block(ctx, "arr.get.null");
+							done_bb = upl_append_block(ctx, "arr.get.done");
+							idxok_bb = upl_append_block(ctx, "arr.get.idxok");
 
 							ctx->builder->CreateCondBr(idx_isnull, null_bb, idxok_bb);
 
