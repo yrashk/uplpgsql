@@ -70,6 +70,8 @@
  */
 #include "upl_common.h"
 
+#include "cppgres.hpp"
+
 #include <math.h>				/* INFINITY */
 
 #ifdef __cplusplus
@@ -1056,7 +1058,6 @@ uplpgsql_prepare_and_get_expr(UPL_compile_ctx *ctx, UPLpgSQL_expr *expr)
 	{
 		UPLpgSQL_execstate fake_estate;
 		UPLpgSQL_execstate *saved_estate;
-		MemoryContext oldcxt;
 
 		/*
 		 * The parser callbacks in upl_comp.c access expr->func->cur_estate
@@ -1082,28 +1083,30 @@ uplpgsql_prepare_and_get_expr(UPL_compile_ctx *ctx, UPLpgSQL_expr *expr)
 		options.parseMode = expr->parseMode;
 		options.cursorOptions = CURSOR_OPT_PARALLEL_OK;
 
-		oldcxt = CurrentMemoryContext;
+		try
+		{
+			auto prepared =
+				cppgres::spi_executor::current().plan(expr->query, options);
 
-		PG_TRY();
-		{
-			plan = SPI_prepare_extended(expr->query, &options);
+			prepared.keep();
+			plan = prepared.release();
 		}
-		PG_CATCH();
+		catch (const std::exception &)
 		{
-			/* Swallow the error and fall back to runtime helper */
-			MemoryContextSwitchTo(oldcxt);
-			FlushErrorState();
+			/*
+			 * Swallow the error and fall back to the runtime helper.  A
+			 * pg_exception has already restored the memory context and
+			 * flushed the error state by this point.
+			 */
 			func->cur_estate = saved_estate;
 			return NULL;
 		}
-		PG_END_TRY();
 
 		func->cur_estate = saved_estate;
 
 		if (plan == NULL)
 			return NULL;
 
-		SPI_keepplan(plan);
 		expr->plan = plan;
 	}
 

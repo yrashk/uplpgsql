@@ -37,6 +37,8 @@
  */
 #include "upl.h"
 
+#include "cppgres.hpp"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -1024,8 +1026,9 @@ upl_emit_block(UPL_compile_ctx *ctx,
  *
  * Returns the native function pointer (void*).
  *
- * The entire compilation is wrapped in PG_TRY to ensure LLVM resources
- * are properly cleaned up on error.
+ * Steps that can raise Postgres errors are ffi_guard'ed, so a compilation
+ * failure unwinds as a C++ exception and the caller's compile context
+ * releases the LLVM resources through its destructors.
  */
 void *
 upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
@@ -1049,128 +1052,116 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 	ctx->builder = std::make_unique<llvm::IRBuilder<>>(*ctx->context);
 
 	/*
-	 * Wrap the rest of compilation in PG_TRY so that LLVM resources are
-	 * cleaned up if any step raises an error (elog(ERROR)).  The longjmp
-	 * does not run destructors, so the unique_ptrs must be reset by hand
-	 * in PG_CATCH (see doc/cpp-rewrite.md).
+	 * Steps that can raise a Postgres error run through cppgres::ffi_guard,
+	 * so a failure surfaces as a C++ exception here and the caller's
+	 * compile context unwinds normally, releasing the LLVM resources —
+	 * no PG_TRY bookkeeping (see doc/cpp-rewrite.md).
 	 */
-	PG_TRY();
+
+	/* 2. Register types (core engine) */
+	upl_register_types(ctx);
+
+	/* 3. Register runtime function declarations (driver) */
+	hooks->register_rt_funcs(ctx);
+
+	/* 4. Create the LLVM function: int32 func(ptr estate) */
+	ctx->function = llvm::Function::Create(
+		llvm::cast<llvm::FunctionType>(ctx->types[UPL_FUNC_TYPE]),
+		llvm::Function::ExternalLinkage, func_name, ctx->module.get());
+
+	/*
+	 * 5. Register sigsetjmp as an external function with returns_twice
+	 * attribute.  Signature: int sigsetjmp(ptr jmpbuf, int savesigs)
+	 */
 	{
-		/* 2. Register types (core engine) */
-		upl_register_types(ctx);
+		llvm::Type *sjparams[] = { ctx->types[UPL_PTR],
+								   ctx->types[UPL_INT32] };
+		llvm::FunctionType *sjft =
+			llvm::FunctionType::get(ctx->types[UPL_INT32],
+									sjparams, false);
+		llvm::Function *sjfn;
 
-		/* 3. Register runtime function declarations (driver) */
-		hooks->register_rt_funcs(ctx);
+		ctx->sigsetjmp_fntype = sjft;
+		sjfn = llvm::Function::Create(sjft,
+									  llvm::Function::ExternalLinkage,
+									  UPL_SIGSETJMP_SYM,
+									  ctx->module.get());
+		ctx->sigsetjmp_fn = sjfn;
 
-		/* 4. Create the LLVM function: int32 func(ptr estate) */
-		ctx->function = llvm::Function::Create(
-			llvm::cast<llvm::FunctionType>(ctx->types[UPL_FUNC_TYPE]),
-			llvm::Function::ExternalLinkage, func_name, ctx->module.get());
-
-		/*
-		 * 5. Register sigsetjmp as an external function with returns_twice
-		 * attribute.  Signature: int sigsetjmp(ptr jmpbuf, int savesigs)
-		 */
-		{
-			llvm::Type *sjparams[] = { ctx->types[UPL_PTR],
-									   ctx->types[UPL_INT32] };
-			llvm::FunctionType *sjft =
-				llvm::FunctionType::get(ctx->types[UPL_INT32],
-										sjparams, false);
-			llvm::Function *sjfn;
-
-			ctx->sigsetjmp_fntype = sjft;
-			sjfn = llvm::Function::Create(sjft,
-										  llvm::Function::ExternalLinkage,
-										  UPL_SIGSETJMP_SYM,
-										  ctx->module.get());
-			ctx->sigsetjmp_fn = sjfn;
-
-			/* Mark as returns_twice -- critical for correct codegen */
-			sjfn->addFnAttr(llvm::Attribute::ReturnsTwice);
-		}
-
-		/* 6. Create entry and return blocks */
-		ctx->entry_bb = upl_append_block(ctx, "entry");
-		ctx->return_bb = upl_append_block(ctx, "return");
-
-		ctx->builder->SetInsertPoint(ctx->entry_bb);
-
-		/* 7. Allocate return code storage, store default */
-		ctx->rc_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32],
-												 nullptr, "rc");
-		ctx->builder->CreateStore(upl_const_int32(ctx, hooks->default_rc),
-								  ctx->rc_ptr);
-
-		/* 8. Get estate parameter (first arg) */
-		estate_ref = ctx->function->getArg(0);
-		estate_ref->setName("estate");
-		ctx->estate_ref = estate_ref;
-
-		/* 9. Driver-specific entry setup (load plstate, allocas, etc.) */
-		hooks->setup_entry(ctx);
-
-		/* 10. Compile the function body (driver dispatches its AST) */
-		hooks->compile_body(ctx);
-
-		/* 11. Fall through to return block */
-		ctx->builder->CreateBr(ctx->return_bb);
-
-		/* 12. Return block: load rc and return */
-		ctx->builder->SetInsertPoint(ctx->return_bb);
-		rc_val = ctx->builder->CreateLoad(ctx->types[UPL_INT32],
-										  ctx->rc_ptr, "rc_val");
-		ctx->builder->CreateRet(rc_val);
-
-		/*
-		 * 13. Add nounwind only if no exception blocks were compiled.
-		 * Functions that call sigsetjmp (returns_twice) must NOT be
-		 * nounwind, or LLVM may misoptimize around the setjmp point.
-		 */
-		if (!ctx->has_exceptions)
-			ctx->function->addFnAttr(llvm::Attribute::NoUnwind);
-
-		/* 14. Verify the module */
-		upl_verify_module(*ctx->module);
-
-		/* 14a. Optionally dump the IR (uplpgsql.dump_ir). */
-		if (hooks->dump_ir)
-		{
-			std::string irstr;
-			llvm::raw_string_ostream os(irstr);
-
-			ctx->module->print(os, nullptr);
-			elog(LOG, "upl: IR for %s:\n%s", func_name,
-				 pstrdup(os.str().c_str()));
-		}
-
-		/* 15. Optimize */
-		upl_optimize_module(*ctx->module, 3);
-
-		/*
-		 * 16. Compile via OrcJIT.
-		 *
-		 * upl_jit_compile() takes ownership of the module and context by
-		 * move.  The builder references the context, so destroy it first.
-		 */
-		ctx->builder.reset();
-		fn_ptr = upl_jit_compile(std::move(ctx->module),
-								 std::move(ctx->context), func_name);
+		/* Mark as returns_twice -- critical for correct codegen */
+		sjfn->addFnAttr(llvm::Attribute::ReturnsTwice);
 	}
-	PG_CATCH();
+
+	/* 6. Create entry and return blocks */
+	ctx->entry_bb = upl_append_block(ctx, "entry");
+	ctx->return_bb = upl_append_block(ctx, "return");
+
+	ctx->builder->SetInsertPoint(ctx->entry_bb);
+
+	/* 7. Allocate return code storage, store default */
+	ctx->rc_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32],
+											 nullptr, "rc");
+	ctx->builder->CreateStore(upl_const_int32(ctx, hooks->default_rc),
+							  ctx->rc_ptr);
+
+	/* 8. Get estate parameter (first arg) */
+	estate_ref = ctx->function->getArg(0);
+	estate_ref->setName("estate");
+	ctx->estate_ref = estate_ref;
+
+	/*
+	 * 9./10. Driver-specific entry setup, then the function body.  These
+	 * recurse into the driver's statement and expression compilers, which
+	 * raise Postgres errors for unsupported constructs — guard them so the
+	 * error unwinds as a C++ exception.
+	 */
+	cppgres::ffi_guard{hooks->setup_entry}(ctx);
+	cppgres::ffi_guard{hooks->compile_body}(ctx);
+
+	/* 11. Fall through to return block */
+	ctx->builder->CreateBr(ctx->return_bb);
+
+	/* 12. Return block: load rc and return */
+	ctx->builder->SetInsertPoint(ctx->return_bb);
+	rc_val = ctx->builder->CreateLoad(ctx->types[UPL_INT32],
+									  ctx->rc_ptr, "rc_val");
+	ctx->builder->CreateRet(rc_val);
+
+	/*
+	 * 13. Add nounwind only if no exception blocks were compiled.
+	 * Functions that call sigsetjmp (returns_twice) must NOT be
+	 * nounwind, or LLVM may misoptimize around the setjmp point.
+	 */
+	if (!ctx->has_exceptions)
+		ctx->function->addFnAttr(llvm::Attribute::NoUnwind);
+
+	/* 14. Verify the module (guarded: verification failure is elog(ERROR)) */
+	cppgres::ffi_guard{upl_verify_module}(*ctx->module);
+
+	/* 14a. Optionally dump the IR (uplpgsql.dump_ir). */
+	if (hooks->dump_ir)
 	{
-		/*
-		 * Clean up LLVM resources on compilation failure.  elog's longjmp
-		 * does not run destructors, so reset the owning pointers by hand,
-		 * builder first (it references the context).
-		 */
-		ctx->builder.reset();
-		ctx->module.reset();
-		ctx->context.reset();
+		std::string irstr;
+		llvm::raw_string_ostream os(irstr);
 
-		PG_RE_THROW();
+		ctx->module->print(os, nullptr);
+		elog(LOG, "upl: IR for %s:\n%s", func_name,
+			 pstrdup(os.str().c_str()));
 	}
-	PG_END_TRY();
+
+	/* 15. Optimize */
+	upl_optimize_module(*ctx->module, 3);
+
+	/*
+	 * 16. Compile via OrcJIT (guarded: OrcJIT failures are elog(ERROR)).
+	 *
+	 * upl_jit_compile() takes ownership of the module and context by
+	 * move.  The builder references the context, so destroy it first.
+	 */
+	ctx->builder.reset();
+	fn_ptr = cppgres::ffi_guard{upl_jit_compile}(std::move(ctx->module),
+												 std::move(ctx->context),
+												 func_name);
 
 	return fn_ptr;
 }

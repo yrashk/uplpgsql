@@ -28,7 +28,7 @@ CXXFLAGS = -std=c++20 -Wall -Wpointer-arith -Werror=vla \
 	-Wformat-security -fno-strict-aliasing -fwrapv \
 	-fvisibility=hidden -fvisibility-inlines-hidden -fPIC -O2 -MMD -MP \
 	-I$(PG_INCLUDEDIR_SERVER) \
-	-I$(CORE_DIR) \
+	-I$(CORE_DIR) -I.. \
 	$(UPL_LLVM_CFLAGS)
 
 OBJS = upl_comp.o upl_exec.o upl_funcs.o \

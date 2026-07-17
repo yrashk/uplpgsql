@@ -59,6 +59,8 @@
  */
 #include "upl_common.h"
 
+#include "cppgres.hpp"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -3155,7 +3157,6 @@ uplpgsql_compile_fors(UPL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 				UPLpgSQL_execstate *saved_estate;
 				SPIPrepareOptions	options;
 				SPIPlanPtr			plan;
-				MemoryContext		oldcxt;
 
 				/* Set up fake execstate for parser callbacks */
 				memset(&fake_estate, 0, sizeof(fake_estate));
@@ -3171,20 +3172,22 @@ uplpgsql_compile_fors(UPL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 				options.parseMode = stmt->query->parseMode;
 				options.cursorOptions = CURSOR_OPT_PARALLEL_OK;
 
-				oldcxt = CurrentMemoryContext;
+				try
+				{
+					auto prepared = cppgres::spi_executor::current().plan(
+						stmt->query->query, options);
 
-				PG_TRY();
-				{
-					plan = SPI_prepare_extended(stmt->query->query, &options);
+					prepared.keep();
+					plan = prepared.release();
 				}
-				PG_CATCH();
+				catch (const std::exception &)
 				{
-					MemoryContextSwitchTo(oldcxt);
-					FlushErrorState();
-					func->cur_estate = saved_estate;
+					/*
+					 * Fall back below; a pg_exception has already restored
+					 * the memory context and flushed the error state.
+					 */
 					plan = NULL;
 				}
-				PG_END_TRY();
 
 				func->cur_estate = saved_estate;
 
@@ -3194,7 +3197,6 @@ uplpgsql_compile_fors(UPL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 					CachedPlanSource *plansource;
 					TupleDesc		tupdesc;
 
-					SPI_keepplan(plan);
 					stmt->query->plan = plan;
 
 					plansources = SPI_plan_get_plan_sources(plan);
