@@ -74,7 +74,7 @@ extern "C" {
 
 /*
  * Convenience macros for accessing PL/pgSQL-specific lang_data fields
- * from the UPL_compile_ctx (which is typedef'd as UPLpgSQL_compile_ctx).
+ * from the UPL_compile_ctx (which is typedef'd as UPL_compile_ctx).
  */
 #define ctx_lang(ctx)			UPLPGSQL_LANG_DATA(ctx)
 #define ctx_plstate(ctx)		(ctx_lang(ctx)->plstate_ref)
@@ -83,77 +83,77 @@ extern "C" {
 #define ctx_num_native_arrays(ctx) (ctx_lang(ctx)->num_native_arrays)
 
 /* Forward declarations */
-static void uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx);
-static void uplpgsql_compile_stmts(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_register_runtime_funcs(UPL_compile_ctx *ctx);
+static void uplpgsql_compile_stmts(UPL_compile_ctx *ctx,
 								   List *stmts);
-static void uplpgsql_compile_stmt(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_stmt(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt *stmt);
-static void uplpgsql_compile_block(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_block(UPL_compile_ctx *ctx,
 								   UPLpgSQL_stmt_block *stmt);
-static void uplpgsql_compile_return(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_return(UPL_compile_ctx *ctx,
 									UPLpgSQL_stmt_return *stmt);
-static void uplpgsql_compile_assign(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_assign(UPL_compile_ctx *ctx,
 									UPLpgSQL_stmt_assign *stmt);
-static void uplpgsql_compile_if(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_if(UPL_compile_ctx *ctx,
 								UPLpgSQL_stmt_if *stmt);
-static void uplpgsql_compile_while(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_while(UPL_compile_ctx *ctx,
 								   UPLpgSQL_stmt_while *stmt);
-static void uplpgsql_compile_loop(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_loop(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_loop *stmt);
-static void uplpgsql_compile_fori(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_fori(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_fori *stmt);
-static void uplpgsql_compile_exit(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_exit(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_exit *stmt);
-static void uplpgsql_compile_perform(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_perform(UPL_compile_ctx *ctx,
 									  UPLpgSQL_stmt_perform *stmt);
-static void uplpgsql_compile_execsql(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_execsql(UPL_compile_ctx *ctx,
 									 UPLpgSQL_stmt_execsql *stmt);
-static void uplpgsql_compile_raise(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_raise(UPL_compile_ctx *ctx,
 								   UPLpgSQL_stmt_raise *stmt);
-static void uplpgsql_compile_case(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_case(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_case *stmt);
-static void uplpgsql_compile_assert(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_assert(UPL_compile_ctx *ctx,
 									UPLpgSQL_stmt_assert *stmt);
-static void uplpgsql_compile_open(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_open(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_open *stmt);
-static void uplpgsql_compile_fetch(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_fetch(UPL_compile_ctx *ctx,
 								   UPLpgSQL_stmt_fetch *stmt);
-static void uplpgsql_compile_close(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_close(UPL_compile_ctx *ctx,
 								   UPLpgSQL_stmt_close *stmt);
-static void uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_fors(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_fors *stmt);
-static void uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_forc(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_forc *stmt);
-static void uplpgsql_compile_dynexecute(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_dynexecute(UPL_compile_ctx *ctx,
 										UPLpgSQL_stmt_dynexecute *stmt);
-static void uplpgsql_compile_dynfors(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_dynfors(UPL_compile_ctx *ctx,
 									 UPLpgSQL_stmt_dynfors *stmt);
-static void uplpgsql_compile_foreach_a(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_foreach_a(UPL_compile_ctx *ctx,
 									   UPLpgSQL_stmt_foreach_a *stmt);
-static void uplpgsql_compile_return_next(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_return_next(UPL_compile_ctx *ctx,
 										 UPLpgSQL_stmt_return_next *stmt);
-static void uplpgsql_compile_return_query(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_return_query(UPL_compile_ctx *ctx,
 										  UPLpgSQL_stmt_return_query *stmt);
-static void uplpgsql_compile_call(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_call(UPL_compile_ctx *ctx,
 								  UPLpgSQL_stmt_call *stmt);
-static void uplpgsql_compile_getdiag(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_getdiag(UPL_compile_ctx *ctx,
 									 UPLpgSQL_stmt_getdiag *stmt);
-static void uplpgsql_compile_commit(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_commit(UPL_compile_ctx *ctx,
 									UPLpgSQL_stmt_commit *stmt);
-static void uplpgsql_compile_rollback(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_compile_rollback(UPL_compile_ctx *ctx,
 									  UPLpgSQL_stmt_rollback *stmt);
 
 /* Native array analysis (defined later, needed by setup_entry hook) */
-static void uplpgsql_analyze_native_arrays(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_analyze_native_arrays(UPL_compile_ctx *ctx,
 										   UPLpgSQL_function *func);
 
 /* Native array sync (defined later, needed by uplpgsql_call_exec) */
-static void uplpgsql_sync_native_arrays(UPLpgSQL_compile_ctx *ctx);
-static void uplpgsql_sync_native_arrays_for_expr(UPLpgSQL_compile_ctx *ctx,
+static void uplpgsql_sync_native_arrays(UPL_compile_ctx *ctx);
+static void uplpgsql_sync_native_arrays_for_expr(UPL_compile_ctx *ctx,
 												 UPLpgSQL_expr *expr);
 
 /* Native array lookup (defined later, needed by uplpgsql_emit_init_vars) */
-static UPLpgSQL_native_array *uplpgsql_find_native_array(UPLpgSQL_compile_ctx *ctx,
+static UPLpgSQL_native_array *uplpgsql_find_native_array(UPL_compile_ctx *ctx,
 														 int dno);
 
 /* Core compilation callbacks */
@@ -171,28 +171,28 @@ static void uplpgsql_compile_block_exceptions(UPL_compile_ctx *ctx,
 
 /* Helper to create LLVM constant values */
 static inline llvm::Value *
-llvm_const_int32(UPLpgSQL_compile_ctx *ctx, int32 val)
+llvm_const_int32(UPL_compile_ctx *ctx, int32 val)
 {
-	return llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], val, false);
+	return llvm::ConstantInt::get(ctx->types[UPL_INT32], val, false);
 }
 
 static inline llvm::Value *
-llvm_const_ptr(UPLpgSQL_compile_ctx *ctx, void *ptr)
+llvm_const_ptr(UPL_compile_ctx *ctx, void *ptr)
 {
 	return llvm::ConstantExpr::getIntToPtr(
-		llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT64], (uintptr_t) ptr, false),
-		ctx->types[UPLPGSQL_PTR]);
+		llvm::ConstantInt::get(ctx->types[UPL_INT64], (uintptr_t) ptr, false),
+		ctx->types[UPL_PTR]);
 }
 
 static inline llvm::BasicBlock *
-uplpgsql_append_block(UPLpgSQL_compile_ctx *ctx, const char *name)
+uplpgsql_append_block(UPL_compile_ctx *ctx, const char *name)
 {
 	return llvm::BasicBlock::Create(*ctx->context, name, ctx->function);
 }
 
 /* Call a registered runtime function */
 static inline llvm::Value *
-uplpgsql_call_fn(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_rt_func which,
+uplpgsql_call_fn(UPL_compile_ctx *ctx, UPLpgSQL_rt_func which,
 				 llvm::Value **args, unsigned count)
 {
 	return ctx->builder->CreateCall(ctx->rt_funcs[which],
@@ -239,7 +239,7 @@ uplpgsql_call_fn(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_rt_func which,
  * syncs only what that expression actually reads.
  */
 static inline llvm::Value *
-uplpgsql_call_exec_nosync(UPLpgSQL_compile_ctx *ctx, void *fn_addr,
+uplpgsql_call_exec_nosync(UPL_compile_ctx *ctx, void *fn_addr,
 						  llvm::Type *ret_type,
 						  llvm::Value **args, unsigned count)
 {
@@ -257,11 +257,11 @@ uplpgsql_call_exec_nosync(UPLpgSQL_compile_ctx *ctx, void *fn_addr,
 																   count),
 									  false);
 	fn_ptr = llvm::ConstantExpr::getIntToPtr(
-		llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT64],
+		llvm::ConstantInt::get(ctx->types[UPL_INT64],
 							   (uintptr_t) fn_addr, false),
 		llvm::PointerType::get(*ctx->context, 0));
 
-	call_name = (ret_type == ctx->types[UPLPGSQL_VOID]) ? "" : "exec.rc";
+	call_name = (ret_type == ctx->types[UPL_VOID]) ? "" : "exec.rc";
 
 	return ctx->builder->CreateCall(llvm::FunctionCallee(fn_type, fn_ptr),
 									llvm::ArrayRef<llvm::Value *>(args, count),
@@ -274,7 +274,7 @@ uplpgsql_call_exec_nosync(UPLpgSQL_compile_ctx *ctx, void *fn_addr,
  * The safe default, and what every caller without a known expression uses.
  */
 static inline llvm::Value *
-uplpgsql_call_exec(UPLpgSQL_compile_ctx *ctx, void *fn_addr,
+uplpgsql_call_exec(UPL_compile_ctx *ctx, void *fn_addr,
 				   llvm::Type *ret_type,
 				   llvm::Value **args, unsigned count)
 {
@@ -326,7 +326,7 @@ uplpgsql_cb_assign_expr(UPL_compile_ctx *ctx, int varno, void *expr)
 	args[2] = upl_const_ptr(ctx, expr);
 
 	uplpgsql_call_exec(ctx, (void *) uplpgsql_rt_case_assign_test,
-					   ctx->types[UPLPGSQL_VOID], args, 3);
+					   ctx->types[UPL_VOID], args, 3);
 }
 
 /* ----------------------------------------------------------------
@@ -345,11 +345,11 @@ uplpgsql_setup_entry(UPL_compile_ctx *ctx)
 	llvm::Value *off, *gep;
 
 	/* Load plstate = estate->uplpgsql_estate */
-	off = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT64],
+	off = llvm::ConstantInt::get(ctx->types[UPL_INT64],
 					   offsetof(UPLpgSQL_exec_state, uplpgsql_estate), false);
-	gep = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8],
+	gep = ctx->builder->CreateGEP(ctx->types[UPL_INT8],
 							 ctx->estate_ref, off, "plstate.ptr");
-	ctx_plstate(ctx) = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+	ctx_plstate(ctx) = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 									  gep, "plstate");
 
 	/* Native array analysis + allocas */
@@ -363,19 +363,19 @@ uplpgsql_setup_entry(UPL_compile_ctx *ctx)
 			char name[64];
 
 			if (na->elemtype == INT4OID)
-				na->llvm_elemtype = ctx->types[UPLPGSQL_INT32];
+				na->llvm_elemtype = ctx->types[UPL_INT32];
 			else if (na->elemtype == INT8OID)
-				na->llvm_elemtype = ctx->types[UPLPGSQL_INT64];
+				na->llvm_elemtype = ctx->types[UPL_INT64];
 			else
-				na->llvm_elemtype = ctx->types[UPLPGSQL_DOUBLE];
+				na->llvm_elemtype = ctx->types[UPL_DOUBLE];
 
 			snprintf(name, sizeof(name), "na%d.data", na->dno);
-			na->data_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_PTR], nullptr, name);
-			ctx->builder->CreateStore(llvm::Constant::getNullValue(ctx->types[UPLPGSQL_PTR]),
+			na->data_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_PTR], nullptr, name);
+			ctx->builder->CreateStore(llvm::Constant::getNullValue(ctx->types[UPL_PTR]),
 						   na->data_ptr);
 
 			snprintf(name, sizeof(name), "na%d.len", na->dno);
-			na->len_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT32], nullptr, name);
+			na->len_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32], nullptr, name);
 			ctx->builder->CreateStore(llvm_const_int32(ctx, 0),
 						   na->len_ptr);
 
@@ -384,14 +384,14 @@ uplpgsql_setup_entry(UPL_compile_ctx *ctx)
 			 * reports the real one for an array that has a different base.
 			 */
 			snprintf(name, sizeof(name), "na%d.lb", na->dno);
-			na->lb_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT32], nullptr, name);
+			na->lb_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32], nullptr, name);
 			ctx->builder->CreateStore(llvm_const_int32(ctx, 1),
 						   na->lb_ptr);
 
 			/* Per-element NULL flags; NULL pointer means "no element is" */
 			snprintf(name, sizeof(name), "na%d.nulls", na->dno);
-			na->nulls_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_PTR], nullptr, name);
-			ctx->builder->CreateStore(llvm::Constant::getNullValue(ctx->types[UPLPGSQL_PTR]),
+			na->nulls_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_PTR], nullptr, name);
+			ctx->builder->CreateStore(llvm::Constant::getNullValue(ctx->types[UPL_PTR]),
 						   na->nulls_ptr);
 
 			/*
@@ -400,14 +400,14 @@ uplpgsql_setup_entry(UPL_compile_ctx *ctx)
 			 * uplpgsql_rt_native_array_reserve.
 			 */
 			snprintf(name, sizeof(name), "na%d.cap", na->dno);
-			na->cap_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT32], nullptr, name);
+			na->cap_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32], nullptr, name);
 			ctx->builder->CreateStore(llvm_const_int32(ctx, 0),
 						   na->cap_ptr);
 
 			/* 1 when data was palloc'd; 0 for the array_fill stack buffer */
 			snprintf(name, sizeof(name), "na%d.onheap", na->dno);
-			na->is_heap_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT8], nullptr, name);
-			ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT8], 0, false),
+			na->is_heap_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT8], nullptr, name);
+			ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT8], 0, false),
 						   na->is_heap_ptr);
 		}
 	}
@@ -438,7 +438,7 @@ uplpgsql_compile_body(UPL_compile_ctx *ctx)
  * upl_emit_block) because refreshing native arrays is language-specific.
  */
 static void
-uplpgsql_emit_init_vars(UPLpgSQL_compile_ctx *ctx, int n_initvars,
+uplpgsql_emit_init_vars(UPL_compile_ctx *ctx, int n_initvars,
 						int *initvarnos)
 {
 	llvm::Value *estate_ref = ctx->function->getArg(0);
@@ -1142,7 +1142,7 @@ native_array_check_stmts(UPLpgSQL_function *func, List *stmts,
  * Called from uplpgsql_compile_function() step 7b, before IR generation.
  */
 static void
-uplpgsql_analyze_native_arrays(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_analyze_native_arrays(UPL_compile_ctx *ctx,
 							   UPLpgSQL_function *func)
 {
 	bool	   *candidates;
@@ -1486,7 +1486,7 @@ uplpgsql_should_jit(UPLpgSQL_function *func)
 UPLpgSQL_func *
 uplpgsql_compile_function(UPLpgSQL_function *func)
 {
-	UPLpgSQL_compile_ctx	ctx;
+	UPL_compile_ctx	ctx;
 	UPLpgSQL_lang_data		lang_data;
 	UPL_compile_hooks		hooks;
 	UPLpgSQL_func		   *result;
@@ -1558,7 +1558,7 @@ uplpgsql_compile_function(UPLpgSQL_function *func)
  * actual function bodies are not in the LLVM module — they are resolved
  * at link time by OrcJIT's process symbol search generator, which finds
  * them in the process's symbol table (they're in our .so with default
- * visibility via UPLPGSQL_RT_EXPORT).
+ * visibility via UPL_RT_EXPORT).
  *
  * Each registration stores both the llvm::Function * (declaration) and
  * llvm::FunctionType * in ctx->rt_funcs[] and ctx->rt_fntypes[],
@@ -1566,14 +1566,14 @@ uplpgsql_compile_function(UPLpgSQL_function *func)
  * uplpgsql_call_fn() to emit call instructions.
  */
 static void
-uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx)
+uplpgsql_register_runtime_funcs(UPL_compile_ctx *ctx)
 {
-	llvm::Type *ptr = ctx->types[UPLPGSQL_PTR];
-	llvm::Type *i1  = ctx->types[UPLPGSQL_INT1];
-	llvm::Type *i8  = ctx->types[UPLPGSQL_INT8];
-	llvm::Type *i32 = ctx->types[UPLPGSQL_INT32];
-	llvm::Type *i64 = ctx->types[UPLPGSQL_INT64];
-	llvm::Type *vd  = ctx->types[UPLPGSQL_VOID];
+	llvm::Type *ptr = ctx->types[UPL_PTR];
+	llvm::Type *i1  = ctx->types[UPL_INT1];
+	llvm::Type *i8  = ctx->types[UPL_INT8];
+	llvm::Type *i32 = ctx->types[UPL_INT32];
+	llvm::Type *i64 = ctx->types[UPL_INT64];
+	llvm::Type *vd  = ctx->types[UPL_VOID];
 
 	/* Datum uplpgsql_rt_eval_expr(ptr estate, ptr expr, ptr isNull_out) */
 	{
@@ -1969,7 +1969,7 @@ uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx)
 
 	/* void uplpgsql_rt_assign_var_datum(ptr estate, i32 dno, i64 value, i8 isnull) */
 	{
-		llvm::Type *i8t = ctx->types[UPLPGSQL_INT8];
+		llvm::Type *i8t = ctx->types[UPL_INT8];
 		llvm::Type *params[] = { ptr, i32, i64, i8t };
 		llvm::FunctionType *ft = llvm::FunctionType::get(vd, params, false);
 
@@ -1980,7 +1980,7 @@ uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx)
 
 	/* void uplpgsql_rt_copy_assign_var_datum(ptr estate, i32 dno, i64 value, i8 isnull) */
 	{
-		llvm::Type *i8t = ctx->types[UPLPGSQL_INT8];
+		llvm::Type *i8t = ctx->types[UPL_INT8];
 		llvm::Type *params[] = { ptr, i32, i64, i8t };
 		llvm::FunctionType *ft = llvm::FunctionType::get(vd, params, false);
 
@@ -2011,7 +2011,7 @@ uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx)
 
 	/* void uplpgsql_rt_copy_assign_var_datum_scoped(ptr, i32, i64, i8, ptr) */
 	{
-		llvm::Type *i8t = ctx->types[UPLPGSQL_INT8];
+		llvm::Type *i8t = ctx->types[UPL_INT8];
 		llvm::Type *params[] = { ptr, i32, i64, i8t, ptr };
 		llvm::FunctionType *ft = llvm::FunctionType::get(vd, params, false);
 
@@ -2147,7 +2147,7 @@ uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx)
 
 	/* void uplpgsql_rt_native_array_release(ptr data, ptr nulls, i8 is_heap) */
 	{
-		llvm::Type *i8t = ctx->types[UPLPGSQL_INT8];
+		llvm::Type *i8t = ctx->types[UPL_INT8];
 		llvm::Type *params[] = { ptr, ptr, i8t };
 		llvm::FunctionType *ft = llvm::FunctionType::get(vd, params, false);
 
@@ -2161,7 +2161,7 @@ uplpgsql_register_runtime_funcs(UPLpgSQL_compile_ctx *ctx)
  * Compile a list of statements
  */
 static void
-uplpgsql_compile_stmts(UPLpgSQL_compile_ctx *ctx, List *stmts)
+uplpgsql_compile_stmts(UPL_compile_ctx *ctx, List *stmts)
 {
 	ListCell *lc;
 
@@ -2177,7 +2177,7 @@ uplpgsql_compile_stmts(UPLpgSQL_compile_ctx *ctx, List *stmts)
  * Compile a single statement (dispatch)
  */
 static void
-uplpgsql_compile_stmt(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt *stmt)
+uplpgsql_compile_stmt(UPL_compile_ctx *ctx, UPLpgSQL_stmt *stmt)
 {
 	/*
 	 * Store the current statement pointer into plstate->err_stmt so that
@@ -2187,10 +2187,10 @@ uplpgsql_compile_stmt(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt *stmt)
 	{
 		llvm::Value *off, *gep, *stmt_ptr;
 
-		off = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT64],
+		off = llvm::ConstantInt::get(ctx->types[UPL_INT64],
 						   offsetof(UPLpgSQL_execstate, err_stmt),
 						   false);
-		gep = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8],
+		gep = ctx->builder->CreateGEP(ctx->types[UPL_INT8],
 							 ctx_plstate(ctx), off, "err_stmt.ptr");
 		stmt_ptr = llvm_const_ptr(ctx, (void *) stmt);
 		ctx->builder->CreateStore(stmt_ptr, gep);
@@ -2326,7 +2326,7 @@ uplpgsql_compile_stmt(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt *stmt)
  * Otherwise, variables are initialized inline and body is compiled normally.
  */
 static void
-uplpgsql_compile_block(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_block *stmt)
+uplpgsql_compile_block(UPL_compile_ctx *ctx, UPLpgSQL_stmt_block *stmt)
 {
 	/*
 	 * Initialize the block's variables here instead of letting the core do
@@ -2391,20 +2391,20 @@ uplpgsql_compile_block(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_block *stmt)
  * This avoids the cost of syncing on every subscript write.
  */
 void
-uplpgsql_emit_sync_native_array(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_emit_sync_native_array(UPL_compile_ctx *ctx,
 								UPLpgSQL_native_array *na)
 {
 	llvm::Value *estate_ref = ctx->function->getArg(0);
-	llvm::Type *i32_ty = ctx->types[UPLPGSQL_INT32];
+	llvm::Type *i32_ty = ctx->types[UPL_INT32];
 	llvm::Value *data, *len, *lb, *nulls;
 	llvm::Value *args[8];
 
-	data = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+	data = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 						  na->data_ptr, "sync.data");
 	len = ctx->builder->CreateLoad(i32_ty,
 						 na->len_ptr, "sync.len");
 	lb = ctx->builder->CreateLoad(i32_ty, na->lb_ptr, "sync.lb");
-	nulls = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+	nulls = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 						   na->nulls_ptr, "sync.nulls");
 
 	args[0] = estate_ref;
@@ -2421,7 +2421,7 @@ uplpgsql_emit_sync_native_array(UPLpgSQL_compile_ctx *ctx,
 }
 
 static void
-uplpgsql_sync_native_arrays(UPLpgSQL_compile_ctx *ctx)
+uplpgsql_sync_native_arrays(UPL_compile_ctx *ctx)
 {
 	int		na_i;
 
@@ -2456,7 +2456,7 @@ uplpgsql_sync_native_arrays(UPLpgSQL_compile_ctx *ctx)
  * good.  Treat "no plan" as "read set unknown" and marshal everything.
  */
 static void
-uplpgsql_sync_native_arrays_for_expr(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_sync_native_arrays_for_expr(UPL_compile_ctx *ctx,
 									 UPLpgSQL_expr *expr)
 {
 	int		na_i;
@@ -2480,7 +2480,7 @@ uplpgsql_sync_native_arrays_for_expr(UPLpgSQL_compile_ctx *ctx,
  * Look up native array metadata by dno, or NULL if dno is not one.
  */
 static UPLpgSQL_native_array *
-uplpgsql_find_native_array(UPLpgSQL_compile_ctx *ctx, int dno)
+uplpgsql_find_native_array(UPL_compile_ctx *ctx, int dno)
 {
 	int		na_i;
 
@@ -2503,11 +2503,11 @@ uplpgsql_find_native_array(UPLpgSQL_compile_ctx *ctx, int dno)
  * native subscript read would return the pre-assignment contents.
  */
 void
-uplpgsql_emit_refresh_native_array(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_emit_refresh_native_array(UPL_compile_ctx *ctx,
 								   UPLpgSQL_native_array *na)
 {
 	llvm::Value *estate_ref = ctx->function->getArg(0);
-	llvm::Type	 *i32_ty = ctx->types[UPLPGSQL_INT32];
+	llvm::Type	 *i32_ty = ctx->types[UPL_INT32];
 	llvm::Value *datum_val, *isnull_val, *new_data, *new_len, *new_lb;
 	llvm::Value *nelems_ptr, *lb_ptr, *nulls_out_ptr, *new_nulls;
 
@@ -2516,7 +2516,7 @@ uplpgsql_emit_refresh_native_array(UPLpgSQL_compile_ctx *ctx,
 
 	nelems_ptr = ctx->builder->CreateAlloca(i32_ty, nullptr, "na_nelems");
 	lb_ptr = ctx->builder->CreateAlloca(i32_ty, nullptr, "na_lb");
-	nulls_out_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_PTR], nullptr, "na_nulls_out");
+	nulls_out_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_PTR], nullptr, "na_nulls_out");
 	isnull_val = ctx->builder->CreateZExt(isnull_val, i32_ty, "isnull_i32");
 
 	/*
@@ -2530,11 +2530,11 @@ uplpgsql_emit_refresh_native_array(UPLpgSQL_compile_ctx *ctx,
 	{
 		llvm::Value *rel_args[3];
 
-		rel_args[0] = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+		rel_args[0] = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 									 na->data_ptr, "na.old_data");
-		rel_args[1] = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+		rel_args[1] = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 									 na->nulls_ptr, "na.old_nulls");
-		rel_args[2] = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_INT8],
+		rel_args[2] = ctx->builder->CreateLoad(ctx->types[UPL_INT8],
 									 na->is_heap_ptr, "na.old_onheap");
 
 		ctx->builder->CreateCall(ctx->rt_funcs[RT_NATIVE_ARRAY_RELEASE],
@@ -2561,7 +2561,7 @@ uplpgsql_emit_refresh_native_array(UPLpgSQL_compile_ctx *ctx,
 	ctx->builder->CreateStore(new_len, na->len_ptr);
 	new_lb = ctx->builder->CreateLoad(i32_ty, lb_ptr, "na.new_lb");
 	ctx->builder->CreateStore(new_lb, na->lb_ptr);
-	new_nulls = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+	new_nulls = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 							   nulls_out_ptr, "na.new_nulls");
 	ctx->builder->CreateStore(new_nulls, na->nulls_ptr);
 
@@ -2572,12 +2572,12 @@ uplpgsql_emit_refresh_native_array(UPLpgSQL_compile_ctx *ctx,
 	 * buffers up before anything is stored.)
 	 */
 	ctx->builder->CreateStore(new_len, na->cap_ptr);
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT8], 1, false),
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT8], 1, false),
 				   na->is_heap_ptr);
 }
 
 static void
-uplpgsql_compile_return(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_return *stmt)
+uplpgsql_compile_return(UPL_compile_ctx *ctx, UPLpgSQL_stmt_return *stmt)
 {
 	/* Sync native arrays before interpreter evaluates RETURN expression */
 	if (ctx_num_native_arrays(ctx) > 0)
@@ -2590,7 +2590,7 @@ uplpgsql_compile_return(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_return *stmt)
  * Compile an ASSIGN statement: varno := expr
  */
 static void
-uplpgsql_compile_assign(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_assign *stmt)
+uplpgsql_compile_assign(UPL_compile_ctx *ctx, UPLpgSQL_stmt_assign *stmt)
 {
 	UPLpgSQL_native_array *target_na;
 
@@ -2609,19 +2609,19 @@ uplpgsql_compile_assign(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_assign *stmt)
 		llvm::Value *args[3];
 
 		/* Load plstate->datums */
-		off = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT64],
+		off = llvm::ConstantInt::get(ctx->types[UPL_INT64],
 						   offsetof(UPLpgSQL_execstate, datums), false);
-		datums_gep = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8],
+		datums_gep = ctx->builder->CreateGEP(ctx->types[UPL_INT8],
 							 ctx_plstate(ctx), off, "datums.ptr");
-		datums_ptr = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+		datums_ptr = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 									datums_gep, "datums");
 
 		/* Load datums[dno] */
-		off = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT64],
+		off = llvm::ConstantInt::get(ctx->types[UPL_INT64],
 						   stmt->varno * sizeof(void *), false);
-		elem_gep = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8],
+		elem_gep = ctx->builder->CreateGEP(ctx->types[UPL_INT8],
 							 datums_ptr, off, "datum.gep");
-		datum_ptr = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR],
+		datum_ptr = ctx->builder->CreateLoad(ctx->types[UPL_PTR],
 								  elem_gep, "datum");
 
 		args[0] = ctx_plstate(ctx);
@@ -2635,7 +2635,7 @@ uplpgsql_compile_assign(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_assign *stmt)
 		 */
 		uplpgsql_sync_native_arrays_for_expr(ctx, stmt->expr);
 		uplpgsql_call_exec_nosync(ctx, (void *) exec_assign_expr,
-								  ctx->types[UPLPGSQL_VOID], args, 3);
+								  ctx->types[UPL_VOID], args, 3);
 
 		/*
 		 * Clear any plan created at compile time so that exec_assign_expr
@@ -2672,7 +2672,7 @@ uplpgsql_compile_assign(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_assign *stmt)
  * Compile an IF / ELSIF / ELSE statement
  */
 static void
-uplpgsql_compile_if(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_if *stmt)
+uplpgsql_compile_if(UPL_compile_ctx *ctx, UPLpgSQL_stmt_if *stmt)
 {
 	int			num_elsifs = list_length(stmt->elsif_list);
 	void	  **elsif_conds = NULL;
@@ -2720,7 +2720,7 @@ uplpgsql_compile_if(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_if *stmt)
  *   while.exit:  continue after loop
  */
 static void
-uplpgsql_compile_while(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_while *stmt)
+uplpgsql_compile_while(UPL_compile_ctx *ctx, UPLpgSQL_stmt_while *stmt)
 {
 	upl_emit_cond_loop(ctx, stmt->label, stmt->cond, stmt->test_at_top, stmt->body);
 }
@@ -2733,7 +2733,7 @@ uplpgsql_compile_while(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_while *stmt)
  *   loop.exit:  continue after loop (reached via EXIT statement)
  */
 static void
-uplpgsql_compile_loop(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_loop *stmt)
+uplpgsql_compile_loop(UPL_compile_ctx *ctx, UPLpgSQL_stmt_loop *stmt)
 {
 	upl_emit_loop(ctx, stmt->label, stmt->body);
 }
@@ -2752,7 +2752,7 @@ uplpgsql_compile_loop(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_loop *stmt)
  *   fori.exit:   set FOUND, continue
  */
 static void
-uplpgsql_compile_fori(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fori *stmt)
+uplpgsql_compile_fori(UPL_compile_ctx *ctx, UPLpgSQL_stmt_fori *stmt)
 {
 	upl_emit_fori(ctx, stmt->label,
 				  stmt->var->dno,
@@ -2770,7 +2770,7 @@ uplpgsql_compile_fori(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fori *stmt)
  * If there's a label, find the matching loop on the stack.
  */
 static void
-uplpgsql_compile_exit(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_exit *stmt)
+uplpgsql_compile_exit(UPL_compile_ctx *ctx, UPLpgSQL_stmt_exit *stmt)
 {
 	upl_emit_loop_exit(ctx, stmt->label, stmt->is_exit, stmt->cond);
 }
@@ -2779,7 +2779,7 @@ uplpgsql_compile_exit(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_exit *stmt)
  * Compile PERFORM statement — delegates to runtime.
  */
 static void
-uplpgsql_compile_perform(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_perform *stmt)
+uplpgsql_compile_perform(UPL_compile_ctx *ctx, UPLpgSQL_stmt_perform *stmt)
 {
 	llvm::Value *args[] = {
 		ctx_plstate(ctx),
@@ -2787,14 +2787,14 @@ uplpgsql_compile_perform(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_perform *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_perform,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
  * Compile EXECSQL statement
  */
 static void
-uplpgsql_compile_execsql(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_execsql *stmt)
+uplpgsql_compile_execsql(UPL_compile_ctx *ctx, UPLpgSQL_stmt_execsql *stmt)
 {
 	llvm::Value *exec_args[] = {
 		ctx_plstate(ctx),
@@ -2802,7 +2802,7 @@ uplpgsql_compile_execsql(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_execsql *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_execsql,
-					   ctx->types[UPLPGSQL_INT32], exec_args, 2);
+					   ctx->types[UPL_INT32], exec_args, 2);
 
 	/*
 	 * If the SELECT INTO target is a native array, decompose the PG array
@@ -2856,7 +2856,7 @@ uplpgsql_compile_execsql(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_execsql *stmt)
  * Compile RAISE statement
  */
 static void
-uplpgsql_compile_raise(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_raise *stmt)
+uplpgsql_compile_raise(UPL_compile_ctx *ctx, UPLpgSQL_stmt_raise *stmt)
 {
 	llvm::Value *args[] = {
 		ctx_plstate(ctx),
@@ -2864,7 +2864,7 @@ uplpgsql_compile_raise(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_raise *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_raise,
-					   ctx->types[UPLPGSQL_VOID], args, 2);
+					   ctx->types[UPL_VOID], args, 2);
 }
 
 /*
@@ -2875,7 +2875,7 @@ uplpgsql_compile_raise(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_raise *stmt)
  * handled by the exec function based on stmt fields set at parse time.
  */
 static void
-uplpgsql_compile_open(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_open *stmt)
+uplpgsql_compile_open(UPL_compile_ctx *ctx, UPLpgSQL_stmt_open *stmt)
 {
 	llvm::Value *args[] = {
 		ctx_plstate(ctx),
@@ -2883,7 +2883,7 @@ uplpgsql_compile_open(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_open *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_open,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
@@ -2893,7 +2893,7 @@ uplpgsql_compile_open(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_open *stmt)
  * row fetching, target assignment, and FOUND variable setting.
  */
 static void
-uplpgsql_compile_fetch(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fetch *stmt)
+uplpgsql_compile_fetch(UPL_compile_ctx *ctx, UPLpgSQL_stmt_fetch *stmt)
 {
 	llvm::Value *args[] = {
 		ctx_plstate(ctx),
@@ -2901,14 +2901,14 @@ uplpgsql_compile_fetch(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fetch *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_fetch,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
  * Compile a cursor CLOSE statement.
  */
 static void
-uplpgsql_compile_close(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_close *stmt)
+uplpgsql_compile_close(UPL_compile_ctx *ctx, UPLpgSQL_stmt_close *stmt)
 {
 	llvm::Value *args[] = {
 		ctx_plstate(ctx),
@@ -2916,7 +2916,7 @@ uplpgsql_compile_close(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_close *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_close,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
@@ -2931,7 +2931,7 @@ uplpgsql_compile_close(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_close *stmt)
  * needing to embed a GUC pointer in the IR.
  */
 static void
-uplpgsql_compile_assert(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_assert *stmt)
+uplpgsql_compile_assert(UPL_compile_ctx *ctx, UPLpgSQL_stmt_assert *stmt)
 {
 	llvm::Value		*estate_ref = ctx->function->getArg(0);
 	llvm::Value		*cond;
@@ -2983,7 +2983,7 @@ uplpgsql_compile_assert(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_assert *stmt)
  * comparisons. So we just evaluate each WHEN as a boolean.
  */
 static void
-uplpgsql_compile_case(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_case *stmt)
+uplpgsql_compile_case(UPL_compile_ctx *ctx, UPLpgSQL_stmt_case *stmt)
 {
 	int			num_whens = list_length(stmt->case_when_list);
 	void	  **when_conds;
@@ -3046,7 +3046,7 @@ uplpgsql_compile_case(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_case *stmt)
  * branches to exit_bb which also closes the portal.
  */
 static void
-uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
+uplpgsql_compile_fors(UPL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 {
 	llvm::Value		*estate_ref = ctx->function->getArg(0);
 	llvm::Value		*portal_val, *has_row, *found_val;
@@ -3074,8 +3074,8 @@ uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 	}
 
 	/* Allocate found flag */
-	found_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT1], nullptr, "fors_found");
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 0, false),
+	found_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT1], nullptr, "fors_found");
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT1], 0, false),
 				   found_ptr);
 
 	cond_bb = uplpgsql_append_block(ctx, "fors.cond");
@@ -3102,7 +3102,7 @@ uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 	ctx->builder->SetInsertPoint(body_bb);
 
 	/* Set found = true */
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 1, false),
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT1], 1, false),
 				   found_ptr);
 
 	/* Redirect RETURN to fors_return_bb for portal cleanup */
@@ -3268,7 +3268,7 @@ uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 	}
 
 	/* Set FOUND */
-	found_val = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_INT1],
+	found_val = ctx->builder->CreateLoad(ctx->types[UPL_INT1],
 							   found_ptr, "found");
 	{
 		llvm::Value *args[] = {
@@ -3276,7 +3276,7 @@ uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
 			found_val
 		};
 		uplpgsql_call_exec(ctx, (void *) exec_set_found,
-						   ctx->types[UPLPGSQL_VOID], args, 2);
+						   ctx->types[UPL_VOID], args, 2);
 	}
 
 	ctx->builder->CreateBr(cont_bb);
@@ -3293,7 +3293,7 @@ uplpgsql_compile_fors(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_fors *stmt)
  * and cursor variable management.
  */
 static void
-uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
+uplpgsql_compile_forc(UPL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
 {
 	llvm::Value		*estate_ref = ctx->function->getArg(0);
 	llvm::Value		*portal_val, *has_row, *found_val;
@@ -3326,8 +3326,8 @@ uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
 	}
 
 	/* Allocate found flag */
-	found_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT1], nullptr, "forc_found");
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 0, false),
+	found_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT1], nullptr, "forc_found");
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT1], 0, false),
 				   found_ptr);
 
 	cond_bb = uplpgsql_append_block(ctx, "forc.cond");
@@ -3354,7 +3354,7 @@ uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
 	ctx->builder->SetInsertPoint(body_bb);
 
 	/* Set found = true */
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 1, false),
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT1], 1, false),
 				   found_ptr);
 
 	/* Redirect RETURN to forc_return_bb for portal cleanup */
@@ -3411,7 +3411,7 @@ uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
 	}
 
 	/* Set FOUND */
-	found_val = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_INT1],
+	found_val = ctx->builder->CreateLoad(ctx->types[UPL_INT1],
 							   found_ptr, "found");
 	{
 		llvm::Value *args[] = {
@@ -3419,7 +3419,7 @@ uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
 			found_val
 		};
 		uplpgsql_call_exec(ctx, (void *) exec_set_found,
-						   ctx->types[UPLPGSQL_VOID], args, 2);
+						   ctx->types[UPL_VOID], args, 2);
 	}
 
 	ctx->builder->CreateBr(cont_bb);
@@ -3432,7 +3432,7 @@ uplpgsql_compile_forc(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_forc *stmt)
  * Compile EXECUTE (dynamic SQL) — delegate to runtime.
  */
 static void
-uplpgsql_compile_dynexecute(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_dynexecute(UPL_compile_ctx *ctx,
 							UPLpgSQL_stmt_dynexecute *stmt)
 {
 	llvm::Value *args[] = {
@@ -3441,7 +3441,7 @@ uplpgsql_compile_dynexecute(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_dynexecute,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
@@ -3450,7 +3450,7 @@ uplpgsql_compile_dynexecute(UPLpgSQL_compile_ctx *ctx,
  * Same pattern as FORS, but uses a dynamic query cursor opener.
  */
 static void
-uplpgsql_compile_dynfors(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_dynfors(UPL_compile_ctx *ctx,
 						 UPLpgSQL_stmt_dynfors *stmt)
 {
 	llvm::Value		*estate_ref = ctx->function->getArg(0);
@@ -3477,8 +3477,8 @@ uplpgsql_compile_dynfors(UPLpgSQL_compile_ctx *ctx,
 	}
 
 	/* Allocate found flag */
-	found_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT1], nullptr, "dynfors_found");
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 0, false),
+	found_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT1], nullptr, "dynfors_found");
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT1], 0, false),
 				   found_ptr);
 
 	cond_bb = uplpgsql_append_block(ctx, "dynfors.cond");
@@ -3504,7 +3504,7 @@ uplpgsql_compile_dynfors(UPLpgSQL_compile_ctx *ctx,
 	/* --- Body --- */
 	ctx->builder->SetInsertPoint(body_bb);
 
-	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 1, false),
+	ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPL_INT1], 1, false),
 				   found_ptr);
 
 	saved_return_bb = ctx->return_bb;
@@ -3541,12 +3541,12 @@ uplpgsql_compile_dynfors(UPLpgSQL_compile_ctx *ctx,
 		uplpgsql_call_fn(ctx, RT_CLOSE_PORTAL, args, 2);
 	}
 
-	found_val = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_INT1],
+	found_val = ctx->builder->CreateLoad(ctx->types[UPL_INT1],
 							   found_ptr, "found");
 	{
 		llvm::Value *args[] = { ctx_plstate(ctx), found_val };
 		uplpgsql_call_exec(ctx, (void *) exec_set_found,
-						   ctx->types[UPLPGSQL_VOID], args, 2);
+						   ctx->types[UPL_VOID], args, 2);
 	}
 
 	ctx->builder->CreateBr(cont_bb);
@@ -3561,7 +3561,7 @@ uplpgsql_compile_dynfors(UPLpgSQL_compile_ctx *ctx,
  * statement is delegated to the interpreter.
  */
 static void
-uplpgsql_compile_foreach_a(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_foreach_a(UPL_compile_ctx *ctx,
 						   UPLpgSQL_stmt_foreach_a *stmt)
 {
 	llvm::Value *args[] = {
@@ -3570,14 +3570,14 @@ uplpgsql_compile_foreach_a(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_foreach_a,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
  * Compile RETURN NEXT — delegate to runtime.
  */
 static void
-uplpgsql_compile_return_next(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_return_next(UPL_compile_ctx *ctx,
 							 UPLpgSQL_stmt_return_next *stmt)
 {
 	llvm::Value *args[] = {
@@ -3586,14 +3586,14 @@ uplpgsql_compile_return_next(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_return_next,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
  * Compile RETURN QUERY — delegate to runtime.
  */
 static void
-uplpgsql_compile_return_query(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_return_query(UPL_compile_ctx *ctx,
 							  UPLpgSQL_stmt_return_query *stmt)
 {
 	llvm::Value *args[] = {
@@ -3602,14 +3602,14 @@ uplpgsql_compile_return_query(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_return_query,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
  * Compile CALL — delegate to runtime.
  */
 static void
-uplpgsql_compile_call(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_call *stmt)
+uplpgsql_compile_call(UPL_compile_ctx *ctx, UPLpgSQL_stmt_call *stmt)
 {
 	llvm::Value *args[] = {
 		ctx_plstate(ctx),
@@ -3617,14 +3617,14 @@ uplpgsql_compile_call(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_call *stmt)
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_call,
-					   ctx->types[UPLPGSQL_INT32], args, 2);
+					   ctx->types[UPL_INT32], args, 2);
 }
 
 /*
  * Compile GET DIAGNOSTICS — delegate to runtime.
  */
 static void
-uplpgsql_compile_getdiag(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_getdiag(UPL_compile_ctx *ctx,
 						 UPLpgSQL_stmt_getdiag *stmt)
 {
 	llvm::Value *args[] = {
@@ -3633,14 +3633,14 @@ uplpgsql_compile_getdiag(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_getdiag,
-					   ctx->types[UPLPGSQL_VOID], args, 2);
+					   ctx->types[UPL_VOID], args, 2);
 }
 
 /*
  * Compile COMMIT — delegate to runtime.
  */
 static void
-uplpgsql_compile_commit(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_commit(UPL_compile_ctx *ctx,
 						UPLpgSQL_stmt_commit *stmt)
 {
 	llvm::Value *args[] = {
@@ -3649,14 +3649,14 @@ uplpgsql_compile_commit(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_commit,
-					   ctx->types[UPLPGSQL_VOID], args, 2);
+					   ctx->types[UPL_VOID], args, 2);
 }
 
 /*
  * Compile ROLLBACK — delegate to runtime.
  */
 static void
-uplpgsql_compile_rollback(UPLpgSQL_compile_ctx *ctx,
+uplpgsql_compile_rollback(UPL_compile_ctx *ctx,
 						  UPLpgSQL_stmt_rollback *stmt)
 {
 	llvm::Value *args[] = {
@@ -3665,7 +3665,7 @@ uplpgsql_compile_rollback(UPLpgSQL_compile_ctx *ctx,
 	};
 
 	uplpgsql_call_exec(ctx, (void *) exec_stmt_rollback,
-					   ctx->types[UPLPGSQL_VOID], args, 2);
+					   ctx->types[UPL_VOID], args, 2);
 }
 
 /* Loop stack management now lives in core/upl_compile.c:

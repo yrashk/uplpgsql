@@ -56,7 +56,7 @@ Only the PL/pgSQL driver lives in this tree today.
 
 ## Building
 
-Requires PostgreSQL 18 or later (18 builds via compatibility shims in `common/upl_plpgsql.h`; development tracks 20devel) and LLVM 15+, and is developed/tested against LLVM 22. The build is C only and uses the LLVM C API only.
+Requires PostgreSQL 18 or later (18 builds via compatibility shims in `common/upl_plpgsql.h`; development tracks 20devel), LLVM 15+ (developed/tested against LLVM 22), and a C++20 compiler. The implementation is C++20: the compiler uses the LLVM C++ API (`llvm::IRBuilder`, `llvm::orc::LLJIT`), and the Postgres-facing layer is built on [cppgres](https://github.com/cppgres/cppgres), vendored as the single amalgamated header `cppgres.hpp` (regenerate with `cpp-amalgamate src/cppgres.hpp` from a cppgres checkout). See `doc/cpp-rewrite.md` for the architecture invariants — error-handling boundaries, symbol-name resolution, and the PG/LLVM header macro rules.
 
 PostgreSQL does **not** need to be built `--with-llvm`. `uplpgsql` links its own LLVM and owns its LLJIT instance; it never touches PostgreSQL's `llvmjit` provider. A stock server with no JIT support of its own runs JIT-compiled PL/pgSQL just fine.
 

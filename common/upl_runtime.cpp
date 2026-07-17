@@ -10,7 +10,7 @@
  *		handling, etc.).
  *
  *		Symbol visibility:
- *		  All functions are marked UPLPGSQL_RT_EXPORT which expands to
+ *		  All functions are marked UPL_RT_EXPORT which expands to
  *		  __attribute__((visibility("default"))).  This is necessary
  *		  because the extension builds with -fvisibility=hidden.  OrcJIT's
  *		  process symbol search generator finds these symbols at link time.
@@ -109,7 +109,7 @@ typedef struct UPLpgSQL_cursor_ctx
  * PG_TRY/PG_CATCH.  This cannot be compiled to LLVM IR because longjmp
  * is incompatible with LLVM's control flow model.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_block_protected(UPLpgSQL_exec_state *estate,
 								 UPLpgSQL_stmt_block *stmt)
 {
@@ -137,7 +137,7 @@ uplpgsql_rt_exec_block_protected(UPLpgSQL_exec_state *estate,
  * Wraps exec_eval_expr with datum copy for safety, since exec_eval_expr
  * returns values that may live in the eval_tuptable.
  */
-UPLPGSQL_RT_EXPORT Datum
+UPL_RT_EXPORT Datum
 uplpgsql_rt_eval_expr(UPLpgSQL_exec_state *estate,
 					  UPLpgSQL_expr *expr, bool *isNull)
 {
@@ -171,7 +171,7 @@ uplpgsql_rt_eval_expr(UPLpgSQL_exec_state *estate,
  * uplpgsql_rt_eval_bool - Evaluate expression and coerce to bool.
  *                          NULL is treated as false.
  */
-UPLPGSQL_RT_EXPORT bool
+UPL_RT_EXPORT bool
 uplpgsql_rt_eval_bool(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -190,7 +190,7 @@ uplpgsql_rt_eval_bool(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 /*
  * uplpgsql_rt_eval_int - Evaluate expression and coerce to int32.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_eval_int(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -211,7 +211,7 @@ uplpgsql_rt_eval_int(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 /*
  * uplpgsql_rt_assign_expr - Evaluate expression and assign to variable.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_assign_expr(UPLpgSQL_exec_state *estate,
 						int target_dno, UPLpgSQL_expr *expr)
 {
@@ -237,7 +237,7 @@ uplpgsql_rt_assign_expr(UPLpgSQL_exec_state *estate,
  * so a simple CASE worked only when the test expression really was an integer.
  * Mirror exec_stmt_case().
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_case_assign_test(UPLpgSQL_exec_state *estate, int t_varno,
 							 UPLpgSQL_expr *t_expr)
 {
@@ -276,7 +276,7 @@ uplpgsql_rt_case_assign_test(UPLpgSQL_exec_state *estate, int t_varno,
  * Must match exec_stmt_block()'s variable initialization logic exactly,
  * including domain constraint checking and error context setup.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_init_var(UPLpgSQL_exec_state *estate, int dno)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -364,7 +364,7 @@ uplpgsql_rt_init_var(UPLpgSQL_exec_state *estate, int dno)
 /*
  * uplpgsql_rt_set_found - Set the FOUND variable.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_set_found(UPLpgSQL_exec_state *estate, bool value)
 {
 	exec_set_found(estate->uplpgsql_estate, value);
@@ -378,7 +378,7 @@ uplpgsql_rt_set_found(UPLpgSQL_exec_state *estate, bool value)
  * The return value, type, and null flag are stored directly into
  * the PL/pgSQL estate by exec_stmt_return.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_return(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_return *stmt)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -399,7 +399,7 @@ uplpgsql_rt_exec_return(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_return *stmt)
  * Lightweight assignment for loop counters: the value is pass-by-value,
  * never null, never freeable. Bypasses the full assign_simple_var path.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_assign_int(UPLpgSQL_exec_state *estate, int dno, int32 value)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -419,7 +419,7 @@ uplpgsql_rt_assign_int(UPLpgSQL_exec_state *estate, int dno, int32 value)
 /*
  * uplpgsql_rt_exec_perform - Execute a PERFORM statement.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_perform(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_perform *stmt)
 {
 	return exec_stmt_perform(estate->uplpgsql_estate, stmt);
@@ -428,7 +428,7 @@ uplpgsql_rt_exec_perform(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_perform *stm
 /*
  * uplpgsql_rt_exec_sql - Execute a static SQL statement.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_sql(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_execsql *stmt)
 {
 	return exec_stmt_execsql(estate->uplpgsql_estate, stmt);
@@ -437,7 +437,7 @@ uplpgsql_rt_exec_sql(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_execsql *stmt)
 /*
  * uplpgsql_rt_exec_raise - Execute a RAISE statement.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exec_raise(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_raise *stmt)
 {
 	exec_stmt_raise(estate->uplpgsql_estate, stmt);
@@ -449,7 +449,7 @@ uplpgsql_rt_exec_raise(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_raise *stmt)
  * Used by CASE to clear the temporary search expression variable
  * after a match is found or at the end of the statement.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_assign_null(UPLpgSQL_exec_state *estate, int dno)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -475,7 +475,7 @@ uplpgsql_rt_assign_null(UPLpgSQL_exec_state *estate, int dno)
  * Called when no WHEN clause matches and there is no ELSE clause.
  * SQL2003 mandates this error.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_case_error(UPLpgSQL_exec_state *estate, int lineno)
 {
 	ereport(ERROR,
@@ -499,7 +499,7 @@ uplpgsql_rt_case_error(UPLpgSQL_exec_state *estate, int lineno)
  * Delegates to exec_stmt_assert which handles the GUC check,
  * condition evaluation, message evaluation, and error raising.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exec_assert(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_assert *stmt)
 {
 	exec_stmt_assert(estate->uplpgsql_estate, stmt);
@@ -513,7 +513,7 @@ uplpgsql_rt_exec_assert(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_assert *stmt)
  * known at compile time, but the SPI infrastructure (plan preparation,
  * parameter binding, portal creation) requires runtime C code.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_open(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_open *stmt)
 {
 	return exec_stmt_open(estate->uplpgsql_estate, stmt);
@@ -525,7 +525,7 @@ uplpgsql_rt_exec_open(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_open *stmt)
  * Handles FETCH INTO target and MOVE variants. Sets FOUND and
  * eval_processed (ROW_COUNT) in the estate.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_fetch(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_fetch *stmt)
 {
 	return exec_stmt_fetch(estate->uplpgsql_estate, stmt);
@@ -534,7 +534,7 @@ uplpgsql_rt_exec_fetch(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_fetch *stmt)
 /*
  * uplpgsql_rt_exec_close - Close a cursor.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_close(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_close *stmt)
 {
 	return exec_stmt_close(estate->uplpgsql_estate, stmt);
@@ -548,7 +548,7 @@ uplpgsql_rt_exec_close(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_close *stmt)
  * batch prefetching state.  Each nested FOR-query loop gets its own
  * context, so batch state doesn't bleed between nesting levels.
  */
-UPLPGSQL_RT_EXPORT void *
+UPL_RT_EXPORT void *
 uplpgsql_rt_open_query_cursor(UPLpgSQL_exec_state *estate,
 							  UPLpgSQL_expr *query)
 {
@@ -580,7 +580,7 @@ uplpgsql_rt_open_query_cursor(UPLpgSQL_exec_state *estate,
  * expanded_record_set_tuple() path instead of exec_move_row(), which
  * avoids tuple deconstruction overhead on subsequent rows.
  */
-UPLPGSQL_RT_EXPORT bool
+UPL_RT_EXPORT bool
 uplpgsql_rt_fetch_cursor_row(UPLpgSQL_exec_state *estate,
 							 void *portal_ptr, int target_dno)
 {
@@ -717,7 +717,7 @@ uplpgsql_rt_fetch_cursor_row(UPLpgSQL_exec_state *estate,
  * Used at the end of FOR-query loops.  Frees any remaining batch
  * and the cursor context itself.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_close_portal(UPLpgSQL_exec_state *estate, void *portal_ptr)
 {
 	UPLpgSQL_cursor_ctx *cctx = (UPLpgSQL_cursor_ctx *) portal_ptr;
@@ -741,7 +741,7 @@ uplpgsql_rt_close_portal(UPLpgSQL_exec_state *estate, void *portal_ptr)
  * and cursor variable assignment.  Returns a cursor context wrapping
  * a pinned Portal.
  */
-UPLPGSQL_RT_EXPORT void *
+UPL_RT_EXPORT void *
 uplpgsql_rt_open_forc_cursor(UPLpgSQL_exec_state *estate,
 							 UPLpgSQL_stmt_forc *stmt)
 {
@@ -762,7 +762,7 @@ uplpgsql_rt_open_forc_cursor(UPLpgSQL_exec_state *estate,
  * Unpins and closes the portal, resets cursor variable if needed.
  * Frees any remaining batch and the cursor context.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_close_forc_cursor(UPLpgSQL_exec_state *estate,
 							  UPLpgSQL_stmt_forc *stmt,
 							  void *portal_ptr)
@@ -783,7 +783,7 @@ uplpgsql_rt_close_forc_cursor(UPLpgSQL_exec_state *estate,
 /*
  * uplpgsql_rt_exec_dynexecute - Execute a dynamic SQL statement.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_dynexecute(UPLpgSQL_exec_state *estate,
 							UPLpgSQL_stmt_dynexecute *stmt)
 {
@@ -793,7 +793,7 @@ uplpgsql_rt_exec_dynexecute(UPLpgSQL_exec_state *estate,
 /*
  * uplpgsql_rt_exec_call - Execute a CALL statement.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_call(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_call *stmt)
 {
 	return exec_stmt_call(estate->uplpgsql_estate, stmt);
@@ -802,7 +802,7 @@ uplpgsql_rt_exec_call(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_call *stmt)
 /*
  * uplpgsql_rt_exec_getdiag - Execute a GET DIAGNOSTICS statement.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exec_getdiag(UPLpgSQL_exec_state *estate,
 						 UPLpgSQL_stmt_getdiag *stmt)
 {
@@ -812,7 +812,7 @@ uplpgsql_rt_exec_getdiag(UPLpgSQL_exec_state *estate,
 /*
  * uplpgsql_rt_exec_return_next - Execute RETURN NEXT.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_return_next(UPLpgSQL_exec_state *estate,
 							 UPLpgSQL_stmt_return_next *stmt)
 {
@@ -822,7 +822,7 @@ uplpgsql_rt_exec_return_next(UPLpgSQL_exec_state *estate,
 /*
  * uplpgsql_rt_exec_return_query - Execute RETURN QUERY.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_return_query(UPLpgSQL_exec_state *estate,
 							  UPLpgSQL_stmt_return_query *stmt)
 {
@@ -832,7 +832,7 @@ uplpgsql_rt_exec_return_query(UPLpgSQL_exec_state *estate,
 /*
  * uplpgsql_rt_exec_commit - Execute COMMIT.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exec_commit(UPLpgSQL_exec_state *estate,
 						UPLpgSQL_stmt_commit *stmt)
 {
@@ -842,7 +842,7 @@ uplpgsql_rt_exec_commit(UPLpgSQL_exec_state *estate,
 /*
  * uplpgsql_rt_exec_rollback - Execute ROLLBACK.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exec_rollback(UPLpgSQL_exec_state *estate,
 						  UPLpgSQL_stmt_rollback *stmt)
 {
@@ -856,7 +856,7 @@ uplpgsql_rt_exec_rollback(UPLpgSQL_exec_state *estate,
  * array slicing/element extraction logic is deeply tied to executor
  * internals. The loop control flow stays in C.
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exec_foreach_a(UPLpgSQL_exec_state *estate,
 						   UPLpgSQL_stmt_foreach_a *stmt)
 {
@@ -880,7 +880,7 @@ uplpgsql_rt_exec_foreach_a(UPLpgSQL_exec_state *estate,
  *
  * Returns the element Datum (pass-by-value or pointer to palloc'd copy).
  */
-UPLPGSQL_RT_EXPORT Datum
+UPL_RT_EXPORT Datum
 uplpgsql_rt_array_get_element(UPLpgSQL_exec_state *estate,
 							  int array_dno, int subscript,
 							  int typlen, int elmlen,
@@ -933,7 +933,7 @@ uplpgsql_rt_array_get_element(UPLpgSQL_exec_state *estate,
  *   newvalue  - Datum value to store
  *   valisnull - whether the value is NULL
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_array_set_element(UPLpgSQL_exec_state *estate,
 							  int array_dno, int subscript,
 							  Datum newvalue, bool valisnull,
@@ -989,7 +989,7 @@ uplpgsql_rt_array_set_element(UPLpgSQL_exec_state *estate,
  * Evaluates the dynamic query string with USING parameters and returns
  * a pinned Portal for the JIT'd loop to iterate over.
  */
-UPLPGSQL_RT_EXPORT void *
+UPL_RT_EXPORT void *
 uplpgsql_rt_open_dynfors_cursor(UPLpgSQL_exec_state *estate,
 								UPLpgSQL_stmt_dynfors *stmt)
 {
@@ -1052,7 +1052,7 @@ uplpgsql_rt_open_dynfors_cursor(UPLpgSQL_exec_state *estate,
  * MUST be called BEFORE sigsetjmp.  The subtransaction is started here
  * so that it exists when sigsetjmp captures the stack.
  */
-UPLPGSQL_RT_EXPORT void *
+UPL_RT_EXPORT void *
 uplpgsql_rt_exception_push_frame(UPLpgSQL_exec_state *estate,
 								 UPLpgSQL_stmt_block *block)
 {
@@ -1100,7 +1100,7 @@ uplpgsql_rt_exception_push_frame(UPLpgSQL_exec_state *estate,
  *
  * Also creates a new eval_econtext belonging to the subtransaction.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exception_arm(UPLpgSQL_exec_state *estate, void *frame_ptr)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1126,7 +1126,7 @@ uplpgsql_rt_exception_arm(UPLpgSQL_exec_state *estate, void *frame_ptr)
  * If the block ended with RETURN, copies the return value out of the
  * subtransaction's eval_context first.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exception_try_exit(UPLpgSQL_exec_state *estate, void *frame_ptr)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1193,7 +1193,7 @@ uplpgsql_rt_exception_try_exit(UPLpgSQL_exec_state *estate, void *frame_ptr)
  * Returns the 0-based index of the matching handler in exc_list,
  * or -1 if no handler matches (caller should rethrow).
  */
-UPLPGSQL_RT_EXPORT int32
+UPL_RT_EXPORT int32
 uplpgsql_rt_exception_catch(UPLpgSQL_exec_state *estate,
 							UPLpgSQL_stmt_block *block,
 							void *frame_ptr)
@@ -1263,7 +1263,7 @@ uplpgsql_rt_exception_catch(UPLpgSQL_exec_state *estate,
  * uplpgsql_rt_exception_set_handler_vars - Set SQLSTATE and SQLERRM variables
  *                                           for the matching handler.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exception_set_handler_vars(UPLpgSQL_exec_state *estate,
 									   UPLpgSQL_stmt_block *block,
 									   int handler_idx)
@@ -1307,7 +1307,7 @@ uplpgsql_rt_exception_set_handler_vars(UPLpgSQL_exec_state *estate,
  *
  * Restores cur_error, pops stmt_mcontext, and frees the error data.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exception_handler_done(UPLpgSQL_exec_state *estate,
 								   void *frame_ptr)
 {
@@ -1339,7 +1339,7 @@ uplpgsql_rt_exception_handler_done(UPLpgSQL_exec_state *estate,
  *
  * Called when no WHEN clause matches.  Also cleans up cur_error first.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_exception_rethrow(UPLpgSQL_exec_state *estate, void *frame_ptr)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1380,7 +1380,7 @@ uplpgsql_rt_exception_rethrow(UPLpgSQL_exec_state *estate, void *frame_ptr)
  * numeric, bytea, etc.), the old value may need to be pfree'd and the
  * new value is always freeable (it was palloc'd by the PG function).
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_assign_var_datum(UPLpgSQL_exec_state *estate,
 							 int dno, Datum value, bool isnull)
 {
@@ -1408,7 +1408,7 @@ uplpgsql_rt_assign_var_datum(UPLpgSQL_exec_state *estate,
  * (set to 0/NULL with freeval=false) so assign_simple_var won't
  * double-free.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_free_var_datum(UPLpgSQL_exec_state *estate, int dno)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1428,7 +1428,7 @@ uplpgsql_rt_free_var_datum(UPLpgSQL_exec_state *estate, int dno)
  * in the current context (e.g. constants from the plan, or another variable's
  * Datum).  We datumCopy to get a palloc'd copy, then assign with freeable=true.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_copy_assign_var_datum(UPLpgSQL_exec_state *estate,
 								  int dno, Datum value, bool isnull)
 {
@@ -1470,7 +1470,7 @@ uplpgsql_rt_copy_assign_var_datum(UPLpgSQL_exec_state *estate,
  * by-reference call, so Tier 1 arithmetic and by-value Tier 2 (comparisons,
  * the LCG, casts to int) pay nothing.
  */
-UPLPGSQL_RT_EXPORT MemoryContext
+UPL_RT_EXPORT MemoryContext
 uplpgsql_rt_alloc_scope_enter(UPLpgSQL_exec_state *estate)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1478,7 +1478,7 @@ uplpgsql_rt_alloc_scope_enter(UPLpgSQL_exec_state *estate)
 	return MemoryContextSwitchTo(plstate->eval_econtext->ecxt_per_tuple_memory);
 }
 
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_alloc_scope_exit(UPLpgSQL_exec_state *estate, MemoryContext old)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1494,7 +1494,7 @@ uplpgsql_rt_alloc_scope_exit(UPLpgSQL_exec_state *estate, MemoryContext old)
  * per-tuple context afterwards (freeing the function's result and any
  * intermediates).  `old` is the context returned by _alloc_scope_enter.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_copy_assign_var_datum_scoped(UPLpgSQL_exec_state *estate,
 										 int dno, Datum value, bool isnull,
 										 MemoryContext old)
@@ -1528,7 +1528,7 @@ uplpgsql_rt_copy_assign_var_datum_scoped(UPLpgSQL_exec_state *estate,
  * Returns the Datum value.  If the field is NULL, returns (Datum) 0.
  * Caller is responsible for null handling if needed.
  */
-UPLPGSQL_RT_EXPORT Datum
+UPL_RT_EXPORT Datum
 uplpgsql_rt_get_recfield(UPLpgSQL_exec_state *estate, int recfield_dno)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
@@ -1555,7 +1555,7 @@ uplpgsql_rt_get_recfield(UPLpgSQL_exec_state *estate, int recfield_dno)
  * resolved once during compilation and passed as a constant.  This skips
  * exec_eval_datum entirely, going straight to expanded_record_get_field.
  */
-UPLPGSQL_RT_EXPORT Datum
+UPL_RT_EXPORT Datum
 uplpgsql_rt_get_recfield_fast(UPLpgSQL_exec_state *estate,
 							  int rec_dno, int fnumber,
 							  bool *isnull_out)
@@ -1597,7 +1597,7 @@ uplpgsql_rt_get_recfield_fast(UPLpgSQL_exec_state *estate,
  *     when an exception causes longjmp out of the function)
  *   - Does not require explicit pfree on normal return
  */
-UPLPGSQL_RT_EXPORT void *
+UPL_RT_EXPORT void *
 uplpgsql_rt_native_array_alloc(UPLpgSQL_exec_state *estate, int64 byte_size)
 {
 	MemoryContext oldcxt;
@@ -1622,7 +1622,7 @@ uplpgsql_rt_native_array_alloc(UPLpgSQL_exec_state *estate, int64 byte_size)
  * Only supports fixed-size pass-by-value element types (int4, int8, float8)
  * which are the types eligible for native arrays.
  */
-UPLPGSQL_RT_EXPORT void *
+UPL_RT_EXPORT void *
 uplpgsql_rt_native_array_from_datum(UPLpgSQL_exec_state *estate,
 									Datum array_datum, bool isnull,
 									int elem_size, int *out_nelems,
@@ -1739,7 +1739,7 @@ uplpgsql_rt_native_array_from_datum(UPLpgSQL_exec_state *estate,
  *
  * This is the native→PG direction (complement of from_datum above).
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_native_array_to_datum(UPLpgSQL_exec_state *estate,
 								  int varno, void *data, int nelems,
 								  int lb, bool *nulls,
@@ -1807,7 +1807,7 @@ uplpgsql_rt_native_array_to_datum(UPLpgSQL_exec_state *estate,
  * sizeof(Datum) elements; enforce the same limit here so an append loop
  * raises where array_set_element would have, rather than at some later sync.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_native_array_reserve(UPLpgSQL_exec_state *estate,
 								 void **data_io, bool **nulls_io,
 								 int8 *is_heap_io, int32 *cap_io,
@@ -1868,7 +1868,7 @@ uplpgsql_rt_native_array_reserve(UPLpgSQL_exec_state *estate,
  * data is skipped when it is the array_fill stack buffer (is_heap 0); the
  * nulls buffer is always heap-allocated when present.
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_native_array_release(void *data, bool *nulls, int8 is_heap)
 {
 	if (data != NULL && is_heap)
@@ -1886,7 +1886,7 @@ uplpgsql_rt_native_array_release(void *data, bool *nulls, int8 is_heap)
  * LLVM IR marks this call as followed by LLVMBuildUnreachable, which
  * tells the optimizer this path never returns (it always ereport(ERROR)s).
  */
-UPLPGSQL_RT_EXPORT void
+UPL_RT_EXPORT void
 uplpgsql_rt_native_array_bounds_check(int subscript, int length)
 {
 	if (unlikely(subscript < 1 || subscript > length))

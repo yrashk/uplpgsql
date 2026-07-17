@@ -965,7 +965,7 @@ dump_block(UPLpgSQL_stmt_block *block)
 	char	   *name;
 
 	if (block->label == NULL)
-		name = "*unnamed*";
+		name = unconstify(char *, "*unnamed*");
 	else
 		name = block->label;
 

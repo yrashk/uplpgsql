@@ -2942,7 +2942,7 @@ make_callstmt_target(UPLpgSQL_execstate *estate, UPLpgSQL_expr *expr)
 
 	row = palloc0_object(UPLpgSQL_row);
 	row->dtype = UPLPGSQL_DTYPE_ROW;
-	row->refname = "(unnamed row)";
+	row->refname = unconstify(char *, "(unnamed row)");
 	row->lineno = -1;
 	row->varnos = palloc_array(int, numargs);
 
@@ -4548,7 +4548,7 @@ exec_stmt_raise(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_raise *stmt)
 											&paramtypmod);
 
 				if (paramisnull)
-					extval = "<NULL>";
+					extval = unconstify(char *, "<NULL>");
 				else
 					extval = convert_value_to_string(estate,
 													 paramvalue,

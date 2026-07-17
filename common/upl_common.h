@@ -70,33 +70,11 @@ extern "C" {
  */
 
 /*
- * Backward compatibility aliases for the RT_EXPORT macro.
- */
-#define UPLPGSQL_RT_EXPORT UPL_RT_EXPORT
-
-/*
  * Max bytes per native array to allocate on stack via LLVM alloca.
  * Arrays larger than this threshold use palloc0 (heap) via runtime helper.
  * 4096 bytes = 512 float8s or 1024 int4s — fits comfortably in stack frame.
  */
 #define NATIVE_ARRAY_STACK_THRESHOLD	4096
-
-/*
- * Backward compatibility aliases for LLVM type indices.
- * Driver code can use either UPL_* or UPLPGSQL_* names.
- */
-#define UPLPGSQL_VOID		UPL_VOID
-#define UPLPGSQL_INT1		UPL_INT1
-#define UPLPGSQL_INT8		UPL_INT8
-#define UPLPGSQL_INT16		UPL_INT16
-#define UPLPGSQL_INT32		UPL_INT32
-#define UPLPGSQL_INT64		UPL_INT64
-#define UPLPGSQL_DOUBLE		UPL_DOUBLE
-#define UPLPGSQL_PTR		UPL_PTR
-#define UPLPGSQL_INTPTR		UPL_INTPTR
-#define UPLPGSQL_DATUM		UPL_DATUM
-#define UPLPGSQL_FUNC_TYPE	UPL_FUNC_TYPE
-#define UPLPGSQL_NUM_TYPES	UPL_NUM_TYPES
 
 /*
  * Runtime function indices — used to index into ctx->rt_funcs[] and
@@ -310,18 +288,10 @@ typedef struct UPLpgSQL_native_array
 } UPLpgSQL_native_array;
 
 /*
- * Backward compatibility: UPLpgSQL_loop_info is now UPL_loop_info in core.
- */
-typedef UPL_loop_info UPLpgSQL_loop_info;
-
-/*
  * The compile context is now UPL_compile_ctx from core.
  * Driver code uses it directly with PL/pgSQL-specific data in lang_data.
  *
- * Backward compatibility typedef so existing code compiles unchanged.
  */
-typedef UPL_compile_ctx UPLpgSQL_compile_ctx;
-
 /*
  * Helper macros to access PL/pgSQL-specific lang_data from a UPL_compile_ctx.
  */
@@ -439,9 +409,9 @@ extern HeapTuple uplpgsql_exec_trigger_jit(UPLpgSQL_function *func,
  * inlined (Tier 1 or Tier 2), false if the caller should fall back to
  * the runtime helper (Tier 3).
  */
-extern bool uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
+extern bool uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 										UPLpgSQL_stmt_assign *stmt);
-extern bool uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
+extern bool uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 									  UPLpgSQL_expr *expr,
 									  llvm::Value * *result_out);
 
@@ -475,9 +445,9 @@ extern Datum uplpgsql_rt_get_recfield_fast(UPLpgSQL_exec_state *estate,
  * that writes it as a Datum.  Defined in upl_compile_stmts.c; also called
  * from upl_compile_expr.c.
  */
-extern void uplpgsql_emit_sync_native_array(UPLpgSQL_compile_ctx *ctx,
+extern void uplpgsql_emit_sync_native_array(UPL_compile_ctx *ctx,
 											struct UPLpgSQL_native_array *na);
-extern void uplpgsql_emit_refresh_native_array(UPLpgSQL_compile_ctx *ctx,
+extern void uplpgsql_emit_refresh_native_array(UPL_compile_ctx *ctx,
 											   struct UPLpgSQL_native_array *na);
 
 /* Runtime helpers for array element access from inlined expressions */

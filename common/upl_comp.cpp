@@ -772,7 +772,7 @@ UPLpgSQL_function *
 uplpgsql_compile_inline(char *proc_source)
 {
 	yyscan_t	scanner;
-	char	   *func_name = "inline_code_block";
+	char	   *func_name = unconstify(char *, "inline_code_block");
 	UPLpgSQL_function *function;
 	struct compile_error_callback_arg cbarg;
 	ErrorContextCallback plerrcontext;
@@ -1891,7 +1891,7 @@ build_row_from_vars(UPLpgSQL_variable **vars, int numvars)
 
 	row = palloc0_object(UPLpgSQL_row);
 	row->dtype = UPLPGSQL_DTYPE_ROW;
-	row->refname = "(unnamed row)";
+	row->refname = unconstify(char *, "(unnamed row)");
 	row->lineno = -1;
 	row->rowtupdesc = CreateTemplateTupleDesc(numvars);
 	row->nfields = numvars;
