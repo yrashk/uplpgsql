@@ -1388,6 +1388,58 @@ extern int	uplpgsql_yyparse(UPLpgSQL_stmt_block **uplpgsql_parse_result_p, yysca
  * Executor internals exported for JIT runtime helpers.
  * These are normally static in pl_exec.c but we need them
  * callable from uplpgsql_runtime.c.
+ *
+ * JIT-embedded ABI — DO NOT change these signatures.
+ *
+ * function_compiler::call_exec()/call_exec_nosync()
+ * (common/upl_compile_stmts.cpp) embeds these functions' addresses
+ * directly into generated LLVM IR, so their C signatures are ABI for
+ * JIT'd frames: a change silently corrupts calls from natively
+ * compiled functions.  They are invoked from JIT'd (non-C++) frames,
+ * so they must also never let a C++ exception propagate to their
+ * caller (see the rt_boundary rules in doc/cpp-rewrite.md).
+ *
+ * This list is derived from the call_exec call sites; keep it in sync
+ * with them.
+ */
+extern void exec_assign_expr(UPLpgSQL_execstate *estate,
+							 UPLpgSQL_datum *target,
+							 UPLpgSQL_expr *expr);
+extern void exec_set_found(UPLpgSQL_execstate *estate, bool state);
+extern int	exec_stmt_perform(UPLpgSQL_execstate *estate,
+							  UPLpgSQL_stmt_perform *stmt);
+extern int	exec_stmt_execsql(UPLpgSQL_execstate *estate,
+							  UPLpgSQL_stmt_execsql *stmt);
+extern int	exec_stmt_raise(UPLpgSQL_execstate *estate,
+							UPLpgSQL_stmt_raise *stmt);
+extern int	exec_stmt_open(UPLpgSQL_execstate *estate,
+						   UPLpgSQL_stmt_open *stmt);
+extern int	exec_stmt_fetch(UPLpgSQL_execstate *estate,
+							UPLpgSQL_stmt_fetch *stmt);
+extern int	exec_stmt_close(UPLpgSQL_execstate *estate,
+							UPLpgSQL_stmt_close *stmt);
+extern int	exec_stmt_dynexecute(UPLpgSQL_execstate *estate,
+								 UPLpgSQL_stmt_dynexecute *stmt);
+extern int	exec_stmt_foreach_a(UPLpgSQL_execstate *estate,
+								UPLpgSQL_stmt_foreach_a *stmt);
+extern int	exec_stmt_return_next(UPLpgSQL_execstate *estate,
+								  UPLpgSQL_stmt_return_next *stmt);
+extern int	exec_stmt_return_query(UPLpgSQL_execstate *estate,
+								   UPLpgSQL_stmt_return_query *stmt);
+extern int	exec_stmt_call(UPLpgSQL_execstate *estate,
+						   UPLpgSQL_stmt_call *stmt);
+extern int	exec_stmt_getdiag(UPLpgSQL_execstate *estate,
+							  UPLpgSQL_stmt_getdiag *stmt);
+extern int	exec_stmt_commit(UPLpgSQL_execstate *estate,
+							 UPLpgSQL_stmt_commit *stmt);
+extern int	exec_stmt_rollback(UPLpgSQL_execstate *estate,
+							   UPLpgSQL_stmt_rollback *stmt);
+
+/*
+ * Internal interpreter seam — called only from C++ code
+ * (common/upl_runtime.cpp runtime helpers,
+ * drivers/plpgsql/uplpgsql_handler.cpp).  Signatures here are ordinary
+ * internal API and may evolve.
  */
 extern void uplpgsql_estate_setup(UPLpgSQL_execstate *estate,
 								  UPLpgSQL_function *func,
@@ -1407,9 +1459,6 @@ extern int	exec_eval_integer(UPLpgSQL_execstate *estate,
 extern bool exec_eval_boolean(UPLpgSQL_execstate *estate,
 							  UPLpgSQL_expr *expr,
 							  bool *isNull);
-extern void exec_assign_expr(UPLpgSQL_execstate *estate,
-							 UPLpgSQL_datum *target,
-							 UPLpgSQL_expr *expr);
 extern void exec_assign_value(UPLpgSQL_execstate *estate,
 							  UPLpgSQL_datum *target,
 							  Datum value, bool isNull,
@@ -1422,16 +1471,9 @@ extern void exec_eval_datum(UPLpgSQL_execstate *estate,
 							bool *isnull);
 extern void assign_simple_var(UPLpgSQL_execstate *estate, UPLpgSQL_var *var,
 							  Datum newvalue, bool isnull, bool freeable);
-extern void exec_set_found(UPLpgSQL_execstate *estate, bool state);
 extern void uplpgsql_set_sqlstate(UPLpgSQL_execstate *estate);
 extern int	exec_stmt_return(UPLpgSQL_execstate *estate,
 							 UPLpgSQL_stmt_return *stmt);
-extern int	exec_stmt_execsql(UPLpgSQL_execstate *estate,
-							  UPLpgSQL_stmt_execsql *stmt);
-extern int	exec_stmt_raise(UPLpgSQL_execstate *estate,
-							UPLpgSQL_stmt_raise *stmt);
-extern int	exec_stmt_perform(UPLpgSQL_execstate *estate,
-							  UPLpgSQL_stmt_perform *stmt);
 extern int	exec_stmt_fori(UPLpgSQL_execstate *estate,
 						   UPLpgSQL_stmt_fori *stmt);
 extern int	exec_stmt_assert(UPLpgSQL_execstate *estate,
@@ -1442,32 +1484,10 @@ extern int	exec_run_select(UPLpgSQL_execstate *estate,
 extern void exec_move_row(UPLpgSQL_execstate *estate,
 						  UPLpgSQL_variable *target,
 						  HeapTuple tup, TupleDesc tupdesc);
-extern int	exec_stmt_open(UPLpgSQL_execstate *estate,
-						   UPLpgSQL_stmt_open *stmt);
-extern int	exec_stmt_fetch(UPLpgSQL_execstate *estate,
-							UPLpgSQL_stmt_fetch *stmt);
-extern int	exec_stmt_close(UPLpgSQL_execstate *estate,
-							UPLpgSQL_stmt_close *stmt);
 extern int	exec_stmt_block(UPLpgSQL_execstate *estate,
 							UPLpgSQL_stmt_block *block);
-extern int	exec_stmt_call(UPLpgSQL_execstate *estate,
-						   UPLpgSQL_stmt_call *stmt);
-extern int	exec_stmt_getdiag(UPLpgSQL_execstate *estate,
-							  UPLpgSQL_stmt_getdiag *stmt);
-extern int	exec_stmt_return_next(UPLpgSQL_execstate *estate,
-								  UPLpgSQL_stmt_return_next *stmt);
-extern int	exec_stmt_return_query(UPLpgSQL_execstate *estate,
-								   UPLpgSQL_stmt_return_query *stmt);
-extern int	exec_stmt_dynexecute(UPLpgSQL_execstate *estate,
-								 UPLpgSQL_stmt_dynexecute *stmt);
 extern int	exec_stmt_dynfors(UPLpgSQL_execstate *estate,
 							  UPLpgSQL_stmt_dynfors *stmt);
-extern int	exec_stmt_foreach_a(UPLpgSQL_execstate *estate,
-								UPLpgSQL_stmt_foreach_a *stmt);
-extern int	exec_stmt_commit(UPLpgSQL_execstate *estate,
-							 UPLpgSQL_stmt_commit *stmt);
-extern int	exec_stmt_rollback(UPLpgSQL_execstate *estate,
-							   UPLpgSQL_stmt_rollback *stmt);
 extern Portal exec_open_forc_cursor(UPLpgSQL_execstate *estate,
 									UPLpgSQL_stmt_forc *stmt);
 extern Portal exec_dynquery_with_params(UPLpgSQL_execstate *estate,
