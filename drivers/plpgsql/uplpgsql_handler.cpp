@@ -153,98 +153,85 @@ _PG_init(void)
 	if (inited)
 		return;
 
-	/* Initialize LLVM (core engine) */
-	upl_llvm_init();
-
 	/*
-	 * Register forked PL/pgSQL GUCs under "uplpgsql." prefix
+	 * cppgres::define_guc runs under ffi_guard, so a Postgres error would
+	 * surface as a C++ exception; _PG_init is a PG-called entry point that no
+	 * exception may escape, so the body runs under exception_guard.
 	 */
-	DefineCustomEnumVariable("uplpgsql.variable_conflict",
-							 "Sets handling of conflicts between UPL/pgSQL variable names and table column names.",
-							 NULL,
-							 &uplpgsql_variable_conflict,
-							 UPLPGSQL_RESOLVE_ERROR,
-							 variable_conflict_options,
-							 PGC_SUSET, 0,
-							 NULL, NULL, NULL);
+	cppgres::exception_guard([&] {
+		/* Initialize LLVM (core engine) */
+		upl_llvm_init();
 
-	DefineCustomBoolVariable("uplpgsql.print_strict_params",
-							 "Print information about parameters in the DETAIL part of the error messages generated on INTO ... STRICT failures.",
-							 NULL,
-							 &uplpgsql_print_strict_params,
-							 false,
-							 PGC_USERSET, 0,
-							 NULL, NULL, NULL);
+		/*
+		 * Register forked PL/pgSQL GUCs under "uplpgsql." prefix
+		 */
+		cppgres::define_guc("uplpgsql.variable_conflict",
+							"Sets handling of conflicts between UPL/pgSQL variable names and table column names.",
+							&uplpgsql_variable_conflict,
+							UPLPGSQL_RESOLVE_ERROR,
+							variable_conflict_options,
+							{.context = PGC_SUSET});
 
-	DefineCustomBoolVariable("uplpgsql.check_asserts",
-							 "Perform checks given in ASSERT statements.",
-							 NULL,
-							 &uplpgsql_check_asserts,
-							 true,
-							 PGC_USERSET, 0,
-							 NULL, NULL, NULL);
+		cppgres::define_guc("uplpgsql.print_strict_params",
+							"Print information about parameters in the DETAIL part of the error messages generated on INTO ... STRICT failures.",
+							&uplpgsql_print_strict_params,
+							false);
 
-	DefineCustomStringVariable("uplpgsql.extra_warnings",
-							   "List of programming constructs that should produce a warning.",
-							   NULL,
-							   &uplpgsql_extra_warnings_string,
-							   "none",
-							   PGC_USERSET, GUC_LIST_INPUT,
-							   uplpgsql_extra_checks_check_hook,
-							   uplpgsql_extra_warnings_assign_hook,
-							   NULL);
+		cppgres::define_guc("uplpgsql.check_asserts",
+							"Perform checks given in ASSERT statements.",
+							&uplpgsql_check_asserts,
+							true);
 
-	DefineCustomStringVariable("uplpgsql.extra_errors",
-							   "List of programming constructs that should produce an error.",
-							   NULL,
-							   &uplpgsql_extra_errors_string,
-							   "none",
-							   PGC_USERSET, GUC_LIST_INPUT,
-							   uplpgsql_extra_checks_check_hook,
-							   uplpgsql_extra_errors_assign_hook,
-							   NULL);
+		cppgres::define_guc("uplpgsql.extra_warnings",
+							"List of programming constructs that should produce a warning.",
+							&uplpgsql_extra_warnings_string,
+							"none",
+							{.flags = GUC_LIST_INPUT,
+							 .check_hook = uplpgsql_extra_checks_check_hook,
+							 .assign_hook = uplpgsql_extra_warnings_assign_hook});
 
-	/* uplpgsql-specific GUCs */
-	DefineCustomBoolVariable("uplpgsql.log_compilation",
-							 "Log when functions are JIT compiled.",
-							 NULL,
-							 &uplpgsql_log_compilation,
-							 false,
-							 PGC_USERSET, 0,
-							 NULL, NULL, NULL);
+		cppgres::define_guc("uplpgsql.extra_errors",
+							"List of programming constructs that should produce an error.",
+							&uplpgsql_extra_errors_string,
+							"none",
+							{.flags = GUC_LIST_INPUT,
+							 .check_hook = uplpgsql_extra_checks_check_hook,
+							 .assign_hook = uplpgsql_extra_errors_assign_hook});
 
-	DefineCustomBoolVariable("uplpgsql.dump_ir",
-							 "Dump LLVM IR to server log.",
-							 NULL,
-							 &uplpgsql_dump_ir,
-							 false,
-							 PGC_USERSET, 0,
-							 NULL, NULL, NULL);
+		/* uplpgsql-specific GUCs */
+		cppgres::define_guc("uplpgsql.log_compilation",
+							"Log when functions are JIT compiled.",
+							&uplpgsql_log_compilation,
+							false);
 
-	DefineCustomBoolVariable("uplpgsql.enable_jit_heuristic",
-							 "Use cost/benefit heuristic to skip JIT for functions unlikely to benefit. "
-							 "When off (default), all functions are JIT compiled.",
-							 NULL,
-							 &uplpgsql_enable_jit_heuristic,
-							 false,
-							 PGC_USERSET, 0,
-							 NULL, NULL, NULL);
+		cppgres::define_guc("uplpgsql.dump_ir",
+							"Dump LLVM IR to server log.",
+							&uplpgsql_dump_ir,
+							false);
 
-	/*
-	 * Reserve the prefix only after every uplpgsql.* GUC is defined.  Doing it
-	 * earlier discards the placeholders for the ones defined below, so a value
-	 * SET before the module was first loaded in a session was thrown away with
-	 * "invalid configuration parameter name".
-	 */
-	MarkGUCPrefixReserved("uplpgsql");
+		cppgres::define_guc("uplpgsql.enable_jit_heuristic",
+							"Use cost/benefit heuristic to skip JIT for functions unlikely to benefit. "
+							"When off (default), all functions are JIT compiled.",
+							&uplpgsql_enable_jit_heuristic,
+							false);
 
-	/* Register transaction callbacks for cleanup */
-	RegisterXactCallback(uplpgsql_xact_cb, NULL);
-	RegisterSubXactCallback(uplpgsql_subxact_cb, NULL);
+		/*
+		 * Reserve the prefix only after every uplpgsql.* GUC is defined.
+		 * Doing it earlier discards the placeholders for the ones defined
+		 * below, so a value SET before the module was first loaded in a
+		 * session was thrown away with "invalid configuration parameter
+		 * name".
+		 */
+		cppgres::reserve_guc_prefix("uplpgsql");
 
-	/* Set up rendezvous point with optional instrumentation plugin */
-	uplpgsql_plugin_ptr = (UPLpgSQL_plugin **)
-		find_rendezvous_variable("UPLpgSQL_plugin");
+		/* Register transaction callbacks for cleanup */
+		RegisterXactCallback(uplpgsql_xact_cb, NULL);
+		RegisterSubXactCallback(uplpgsql_subxact_cb, NULL);
+
+		/* Set up rendezvous point with optional instrumentation plugin */
+		uplpgsql_plugin_ptr = (UPLpgSQL_plugin **)
+			find_rendezvous_variable("UPLpgSQL_plugin");
+	})();
 
 	inited = true;
 }
@@ -256,7 +243,7 @@ static bool
 uplpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source)
 {
 	char	   *rawstring;
-	List	   *elemlist;
+	List	   *elemlist = NIL;
 	int			extrachecks = 0;
 	int		   *myextra;
 
@@ -267,11 +254,14 @@ uplpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source
 	else
 	{
 		rawstring = pstrdup(*newvalue);
+		cppgres::scope_exit cleanup([&] {
+			pfree(rawstring);
+			list_free(elemlist);
+		}, "uplpgsql: extra_checks cleanup failed");
+
 		if (!SplitIdentifierString(rawstring, ',', &elemlist))
 		{
 			GUC_check_errdetail("List syntax is invalid.");
-			pfree(rawstring);
-			list_free(elemlist);
 			return false;
 		}
 
@@ -286,21 +276,14 @@ uplpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source
 			else if (pg_strcasecmp(tok, "all") == 0 || pg_strcasecmp(tok, "none") == 0)
 			{
 				GUC_check_errdetail("Key word \"%s\" cannot be combined with other key words.", tok);
-				pfree(rawstring);
-				list_free(elemlist);
 				return false;
 			}
 			else
 			{
 				GUC_check_errdetail("Unrecognized key word: \"%s\".", tok);
-				pfree(rawstring);
-				list_free(elemlist);
 				return false;
 			}
 		}
-
-		pfree(rawstring);
-		list_free(elemlist);
 	}
 
 	myextra = (int *) guc_malloc(LOG, sizeof(int));

@@ -1,8 +1,14 @@
 diff --git a/src/cppgres.hpp b/src/cppgres.hpp
-index 4fd56d5..f771578 100644
+index 4fd56d5..1990b06 100644
 --- a/src/cppgres.hpp
 +++ b/src/cppgres.hpp
-@@ -77,6 +77,7 @@ using ::fmt::format;
+@@ -72,11 +72,13 @@ using ::fmt::format;
+ #include "cppgres/executor.hpp"
+ #include "cppgres/function.hpp"
+ #include "cppgres/guard.hpp"
++#include "cppgres/guc.hpp"
+ #include "cppgres/imports.h"
+ #include "cppgres/list.hpp"
  #include "cppgres/memory.hpp"
  #include "cppgres/node.hpp"
  #include "cppgres/record.hpp"
@@ -48,7 +54,7 @@ index 19de9a7..6e7aa6e 100644
      ffi_guard{::SPI_finish}();
      executors.pop();
 diff --git a/src/cppgres/guard.hpp b/src/cppgres/guard.hpp
-index 0ab29ab..6d350cf 100644
+index 0ab29ab..38975e1 100644
 --- a/src/cppgres/guard.hpp
 +++ b/src/cppgres/guard.hpp
 @@ -7,6 +7,7 @@ extern "C" {
@@ -59,7 +65,7 @@ index 0ab29ab..6d350cf 100644
  #include <iostream>
  #include <utility>
  
-@@ -50,14 +51,66 @@ template <typename Func> struct ffi_guard {
+@@ -50,14 +51,91 @@ template <typename Func> struct ffi_guard {
    }
  };
  
@@ -113,6 +119,31 @@ index 0ab29ab..6d350cf 100644
 +
 +template <typename Func> scope_fail(Func, const char *) -> scope_fail<Func>;
 +
++/**
++ * @brief Scope guard that always runs the callable on scope exit
++ *
++ * Unlike @ref cppgres::scope_fail, the destructor runs the callable
++ * unconditionally — on normal exit and during unwinding alike — through
++ * @ref cppgres::ffi_guard_noexcept, so the cleanup itself never throws,
++ * degrading any failure to a WARNING with the given message.
++ */
++template <typename Func> struct scope_exit {
++  Func func;
++  const char *warning_message;
++
++  scope_exit(Func f, const char *warning_message)
++      : func(std::move(f)), warning_message(warning_message) {}
++
++  ~scope_exit() { ffi_guard_noexcept(func, warning_message); }
++
++  scope_exit(const scope_exit &) = delete;
++  scope_exit &operator=(const scope_exit &) = delete;
++  scope_exit(scope_exit &&) = delete;
++  scope_exit &operator=(scope_exit &&) = delete;
++};
++
++template <typename Func> scope_exit(Func, const char *) -> scope_exit<Func>;
++
  /**
   * @brief Wraps a C++ function to catch exceptions and report them as Postgres errors
   *
@@ -128,7 +159,7 @@ index 0ab29ab..6d350cf 100644
   *
   * @tparam Func C++ function to call
   */
-@@ -70,8 +123,8 @@ template <typename Func> struct exception_guard {
+@@ -70,8 +148,8 @@ template <typename Func> struct exception_guard {
    auto operator()(Args &&...args) -> decltype(func(std::forward<Args>(args)...)) {
      try {
        return func(std::forward<Args>(args)...);
@@ -139,6 +170,125 @@ index 0ab29ab..6d350cf 100644
      } catch (const std::exception &e) {
        report(ERROR, "exception: %s", e.what());
      } catch (...) {
+diff --git a/src/cppgres/guc.hpp b/src/cppgres/guc.hpp
+new file mode 100644
+index 0000000..5905f76
+--- /dev/null
++++ b/src/cppgres/guc.hpp
+@@ -0,0 +1,113 @@
++/**
++ * \file
++ */
++#pragma once
++
++#include "guard.hpp"
++#include "imports.h"
++
++extern "C" {
++#include <utils/guc.h>
++}
++
++namespace cppgres {
++
++/**
++ * @brief Optional settings for a boolean GUC definition
++ *
++ * All members default to the values Postgres extensions most commonly pass, so
++ * call sites only need to designated-initialize the ones they care about.
++ */
++struct guc_bool_options {
++  const char *long_desc = nullptr;
++  ::GucContext context = PGC_USERSET;
++  int flags = 0;
++  ::GucBoolCheckHook check_hook = nullptr;
++  ::GucBoolAssignHook assign_hook = nullptr;
++  ::GucShowHook show_hook = nullptr;
++};
++
++/**
++ * @brief Optional settings for a string GUC definition
++ *
++ * All members default to the values Postgres extensions most commonly pass, so
++ * call sites only need to designated-initialize the ones they care about.
++ */
++struct guc_string_options {
++  const char *long_desc = nullptr;
++  ::GucContext context = PGC_USERSET;
++  int flags = 0;
++  ::GucStringCheckHook check_hook = nullptr;
++  ::GucStringAssignHook assign_hook = nullptr;
++  ::GucShowHook show_hook = nullptr;
++};
++
++/**
++ * @brief Optional settings for an enum GUC definition
++ *
++ * All members default to the values Postgres extensions most commonly pass, so
++ * call sites only need to designated-initialize the ones they care about.
++ */
++struct guc_enum_options {
++  const char *long_desc = nullptr;
++  ::GucContext context = PGC_USERSET;
++  int flags = 0;
++  ::GucEnumCheckHook check_hook = nullptr;
++  ::GucEnumAssignHook assign_hook = nullptr;
++  ::GucShowHook show_hook = nullptr;
++};
++
++/**
++ * @brief Define a custom boolean GUC (`DefineCustomBoolVariable`)
++ *
++ * Runs under @ref cppgres::ffi_guard, so a Postgres error surfaces as
++ * @ref cppgres::pg_exception.
++ */
++inline void define_guc(const char *name, const char *short_desc, bool *var, bool default_value,
++                       const guc_bool_options &opts = {}) {
++  ffi_guard{::DefineCustomBoolVariable}(name, short_desc, opts.long_desc, var, default_value,
++                                        opts.context, opts.flags, opts.check_hook,
++                                        opts.assign_hook, opts.show_hook);
++}
++
++/**
++ * @brief Define a custom string GUC (`DefineCustomStringVariable`)
++ *
++ * Runs under @ref cppgres::ffi_guard, so a Postgres error surfaces as
++ * @ref cppgres::pg_exception.
++ */
++inline void define_guc(const char *name, const char *short_desc, char **var,
++                       const char *default_value, const guc_string_options &opts = {}) {
++  ffi_guard{::DefineCustomStringVariable}(name, short_desc, opts.long_desc, var, default_value,
++                                          opts.context, opts.flags, opts.check_hook,
++                                          opts.assign_hook, opts.show_hook);
++}
++
++/**
++ * @brief Define a custom enum GUC (`DefineCustomEnumVariable`)
++ *
++ * Runs under @ref cppgres::ffi_guard, so a Postgres error surfaces as
++ * @ref cppgres::pg_exception.
++ */
++inline void define_guc(const char *name, const char *short_desc, int *var, int default_value,
++                       const ::config_enum_entry *entries, const guc_enum_options &opts = {}) {
++  ffi_guard{::DefineCustomEnumVariable}(name, short_desc, opts.long_desc, var, default_value,
++                                        entries, opts.context, opts.flags, opts.check_hook,
++                                        opts.assign_hook, opts.show_hook);
++}
++
++/**
++ * @brief Reserve a GUC prefix for this extension (`MarkGUCPrefixReserved`)
++ *
++ * Reserve the prefix only after every GUC under it has been defined:
++ * reserving earlier discards the placeholders for GUCs defined later, so
++ * values SET before the module was loaded would be thrown away.
++ *
++ * Runs under @ref cppgres::ffi_guard, so a Postgres error surfaces as
++ * @ref cppgres::pg_exception.
++ */
++inline void reserve_guc_prefix(const char *prefix) {
++  ffi_guard{::MarkGUCPrefixReserved}(prefix);
++}
++
++} // namespace cppgres
 diff --git a/src/cppgres/resource_owner.hpp b/src/cppgres/resource_owner.hpp
 new file mode 100644
 index 0000000..e0bf446
