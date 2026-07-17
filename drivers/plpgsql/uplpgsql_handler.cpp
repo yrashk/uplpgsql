@@ -366,14 +366,8 @@ struct inline_function_guard
 	~inline_function_guard()
 	{
 		func_->cfunc.use_count--;
-		try
-		{
-			cppgres::ffi_guard{uplpgsql_free_function_memory}(func_);
-		}
-		catch (...)
-		{
-			elog(WARNING, "uplpgsql: freeing DO block function memory failed");
-		}
+		cppgres::ffi_guard_noexcept([f = func_] { uplpgsql_free_function_memory(f); },
+									"uplpgsql: freeing DO block function memory failed");
 	}
 
 	inline_function_guard(const inline_function_guard &) = delete;
@@ -401,40 +395,6 @@ struct simple_eval_resources
 private:
 	cppgres::resource_owner resowner_{"UPL/pgSQL DO block simple expressions"};
 	cppgres::executor_state estate_;
-};
-
-/*
- * Scope-fail guard: when the scope is left by an exception, fire the
- * subtransaction-abort callback to tear down partially-set-up execution
- * state (the RAII equivalent of the old PG_CATCH-only cleanup).
- */
-struct abort_callback_guard
-{
-	abort_callback_guard() : entry_exceptions_(std::uncaught_exceptions()) {}
-
-	~abort_callback_guard()
-	{
-		if (std::uncaught_exceptions() <= entry_exceptions_)
-			return;
-
-		try
-		{
-			cppgres::ffi_guard{[] {
-				uplpgsql_subxact_cb(SUBXACT_EVENT_ABORT_SUB,
-									GetCurrentSubTransactionId(), 0, NULL);
-			}}();
-		}
-		catch (...)
-		{
-			elog(WARNING, "uplpgsql: DO block abort cleanup failed");
-		}
-	}
-
-	abort_callback_guard(const abort_callback_guard &) = delete;
-	abort_callback_guard &operator=(const abort_callback_guard &) = delete;
-
-private:
-	int			entry_exceptions_;
 };
 
 /*
@@ -650,7 +610,10 @@ public:
 		 * partially-set-up execution state is torn down before this
 		 * object's resources are released.
 		 */
-		abort_callback_guard on_error;
+		cppgres::scope_fail on_error{[] {
+			uplpgsql_subxact_cb(SUBXACT_EVENT_ABORT_SUB,
+								GetCurrentSubTransactionId(), 0, NULL);
+		}, "uplpgsql: DO block abort cleanup failed"};
 
 		return cppgres::ffi_guard{uplpgsql_exec_function}(
 			func_, &fc_.fcinfo, simple_eval_.estate(),
@@ -697,30 +660,18 @@ Datum
 uplpgsql_call_handler(PG_FUNCTION_ARGS)
 {
 	bool		nonatomic;
-	Datum		retval = (Datum) 0;
 
 	nonatomic = fcinfo->context &&
 		IsA(fcinfo->context, CallContext) &&
 		!castNode(CallContext, fcinfo->context)->atomic;
 
-	try
-	{
+	return cppgres::exception_guard{[&]() -> Datum {
 		cppgres::spi_executor spi(nonatomic ? cppgres::spi_opt::nonatomic
 											: cppgres::spi_opt::none);
 		uplpgsql::call call(fcinfo, nonatomic);
 
-		retval = call.execute();
-	}
-	catch (cppgres::pg_exception &e)
-	{
-		e.rethrow();
-	}
-	catch (const std::exception &e)
-	{
-		cppgres::report(ERROR, "%s", e.what());
-	}
-
-	return retval;
+		return call.execute();
+	}}();
 }
 
 /*
@@ -738,26 +689,14 @@ uplpgsql_inline_handler(PG_FUNCTION_ARGS)
 {
 	InlineCodeBlock *codeblock = castNode(InlineCodeBlock,
 										  DatumGetPointer(PG_GETARG_DATUM(0)));
-	Datum		retval = (Datum) 0;
 
-	try
-	{
+	return cppgres::exception_guard{[&]() -> Datum {
 		cppgres::spi_executor spi(codeblock->atomic ? cppgres::spi_opt::none
 													: cppgres::spi_opt::nonatomic);
 		uplpgsql::do_block block(codeblock);
 
-		retval = block.execute();
-	}
-	catch (cppgres::pg_exception &e)
-	{
-		e.rethrow();
-	}
-	catch (const std::exception &e)
-	{
-		cppgres::report(ERROR, "%s", e.what());
-	}
-
-	return retval;
+		return block.execute();
+	}}();
 }
 
 /*
@@ -775,8 +714,7 @@ uplpgsql_validator(PG_FUNCTION_ARGS)
 	if (!CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid))
 		PG_RETURN_VOID();
 
-	try
-	{
+	cppgres::exception_guard{[&] {
 		/* Get the function's return type from its pg_proc entry */
 		{
 			cppgres::syscache<Form_pg_proc, cppgres::oid> proc(funcoid);
@@ -829,15 +767,7 @@ uplpgsql_validator(PG_FUNCTION_ARGS)
 			 */
 			cppgres::ffi_guard{uplpgsql_compile}(fake_fcinfo, true);
 		}
-	}
-	catch (cppgres::pg_exception &e)
-	{
-		e.rethrow();
-	}
-	catch (const std::exception &e)
-	{
-		cppgres::report(ERROR, "%s", e.what());
-	}
+	}}();
 
 	PG_RETURN_VOID();
 }

@@ -1,12 +1,8 @@
 diff --git a/src/cppgres.hpp b/src/cppgres.hpp
-index 95bf148..f771578 100644
+index 4fd56d5..f771578 100644
 --- a/src/cppgres.hpp
 +++ b/src/cppgres.hpp
-@@ -73,9 +73,11 @@ using ::fmt::format;
- #include "cppgres/function.hpp"
- #include "cppgres/guard.hpp"
- #include "cppgres/imports.h"
-+#include "cppgres/list.hpp"
+@@ -77,6 +77,7 @@ using ::fmt::format;
  #include "cppgres/memory.hpp"
  #include "cppgres/node.hpp"
  #include "cppgres/record.hpp"
@@ -14,85 +10,11 @@ index 95bf148..f771578 100644
  #include "cppgres/role.hpp"
  #include "cppgres/set.hpp"
  #include "cppgres/threading.hpp"
-diff --git a/src/cppgres/exception.hpp b/src/cppgres/exception.hpp
-index 861520b..147e9d3 100644
---- a/src/cppgres/exception.hpp
-+++ b/src/cppgres/exception.hpp
-@@ -17,6 +17,27 @@ class pg_exception : public std::exception {
- 
- public:
-   const char *message() const noexcept { return error->message; }
-+
-+  /**
-+   * @brief The complete error record captured from Postgres.
-+   *
-+   * Valid for the lifetime of the exception object.
-+   */
-+  const ::ErrorData *error_data() const noexcept { return error; }
-+
-+  /**
-+   * @brief Re-throws the captured error as a Postgres error, with every
-+   *        field (SQLSTATE, detail, hint, context, ...) intact.
-+   *
-+   * Intended to be called from a `catch` block once cleanup is done and the
-+   * error should continue propagating to Postgres.  Never returns.
-+   *
-+   * The longjmp does not run this object's destructor, so the exception's
-+   * backing storage is handed to Postgres to be released when ErrorContext
-+   * is reset — that is, once the error has been fully handled.
-+   */
-+  [[noreturn]] void rethrow();
-+
-   ~pg_exception();
- };
- } // namespace cppgres
-diff --git a/src/cppgres/exception_impl.hpp b/src/cppgres/exception_impl.hpp
-index a06b8d5..8e6c9a5 100644
---- a/src/cppgres/exception_impl.hpp
-+++ b/src/cppgres/exception_impl.hpp
-@@ -19,4 +19,18 @@ inline pg_exception::pg_exception(::MemoryContext mcxt) : mcxt(mcxt) {
- 
- inline pg_exception::~pg_exception() { memory_context(error_cxt).delete_context(); }
- 
-+[[noreturn]] inline void pg_exception::rethrow() {
-+  // ReThrowError copies the record into Postgres' error stack (strings into
-+  // ErrorContext) and then longjmps, which skips ~pg_exception.  Register a
-+  // reset callback on ErrorContext so our backing context is freed once the
-+  // error has been fully handled (FlushErrorState resets ErrorContext).
-+  auto *cb = static_cast<::MemoryContextCallback *>(
-+      ffi_guard{::MemoryContextAlloc}(::ErrorContext, sizeof(::MemoryContextCallback)));
-+  cb->func = [](void *arg) { ::MemoryContextDelete(static_cast<::MemoryContext>(arg)); };
-+  cb->arg = error_cxt;
-+  ::MemoryContextRegisterResetCallback(::ErrorContext, cb);
-+  ::ReThrowError(error);
-+  __builtin_unreachable();
-+}
-+
- } // namespace cppgres
 diff --git a/src/cppgres/executor.hpp b/src/cppgres/executor.hpp
-index c943846..6e7aa6e 100644
+index 19de9a7..6e7aa6e 100644
 --- a/src/cppgres/executor.hpp
 +++ b/src/cppgres/executor.hpp
-@@ -38,6 +38,18 @@ template <convertible_from_nullable_datum... Args> struct spi_plan {
-     kept = true;
-   }
- 
-+  /**
-+   * @brief Releases ownership of the plan to the caller.
-+   *
-+   * Returns the raw plan pointer and disarms this object's destructor.
-+   * Typically used after @ref keep() when the plan's lifetime is managed
-+   * elsewhere (for example, stored in a procedural language's function AST).
-+   */
-+  ::SPIPlanPtr release() noexcept {
-+    kept = false;
-+    return plan;
-+  }
-+
-   ~spi_plan() {
-     if (kept) {
-       ffi_guard{::SPI_freeplan}(*this);
-@@ -61,6 +73,15 @@ concept a_vector = requires {
+@@ -73,6 +73,15 @@ concept a_vector = requires {
    typename T::allocator_type;
  } && std::same_as<T, std::vector<typename T::value_type, typename T::allocator_type>>;
  
@@ -108,7 +30,7 @@ index c943846..6e7aa6e 100644
  /**
   * @brief [SPI](https://www.postgresql.org/docs/current/spi.html) executor API
   */
-@@ -69,6 +90,16 @@ struct spi_executor : public executor {
+@@ -81,6 +90,16 @@ struct spi_executor : public executor {
     * @brief Creates an SPI executor
     */
    spi_executor() : spi_executor(0) {}
@@ -125,131 +47,98 @@ index c943846..6e7aa6e 100644
    ~spi_executor() {
      ffi_guard{::SPI_finish}();
      executors.pop();
-@@ -357,6 +388,35 @@ struct spi_executor : public executor {
-         ffi_guard{::SPI_prepare}(utils::to_cstring(query), nargs, types.data()));
-   }
- 
-+  /**
-+   * @brief Prepares a plan with full ::SPIPrepareOptions.
-+   *
-+   * This is the preparation entry point procedural language implementations
-+   * need: parameter types are resolved through the options' parser hooks
-+   * (`parserSetup`/`parserSetupArg`) rather than a static argument list, and
-+   * the options carry the raw parse mode and cursor options.
-+   */
-+  spi_plan<> plan(utils::convertible_to_cstring auto query,
-+                  const ::SPIPrepareOptions &opts) {
-+    if (executors.top() != this) {
-+      throw std::runtime_error("not a current SPI executor");
-+    }
-+    ::SPIPrepareOptions options = opts;
-+    return spi_plan<>(ffi_guard{::SPI_prepare_extended}(utils::to_cstring(query), &options));
-+  }
-+
-+  /**
-+   * @brief The innermost live SPI executor.
-+   *
-+   * @throws std::runtime_error if no SPI executor is in scope
-+   */
-+  static spi_executor &current() {
-+    if (executors.empty()) {
-+      throw std::runtime_error("no SPI executor in scope");
-+    }
-+    return *executors.top();
-+  }
-+
-   template <typename Ret, convertible_into_nullable_datum... Args>
-   results<Ret> query(spi_plan<Args...> &query, Args &&...args) {
-     return this->query<Ret, Args...>(query, options(), std::forward<Args>(args)...);
-diff --git a/src/cppgres/function.hpp b/src/cppgres/function.hpp
-index f419dcd..72e17c6 100644
---- a/src/cppgres/function.hpp
-+++ b/src/cppgres/function.hpp
-@@ -524,7 +524,7 @@ template <has_type_traits T> function<const char *, T> output_function(T &v) {
-   return function<const char *, T>(foutoid);
+diff --git a/src/cppgres/guard.hpp b/src/cppgres/guard.hpp
+index 0ab29ab..6d350cf 100644
+--- a/src/cppgres/guard.hpp
++++ b/src/cppgres/guard.hpp
+@@ -7,6 +7,7 @@ extern "C" {
+ #include <setjmp.h>
  }
  
--static function<const char *, cppgres::value> output_function(const type &t) {
-+inline function<const char *, cppgres::value> output_function(const type &t) {
-   ::Oid foutoid;
-   bool typisvarlena;
-   ffi_guard{::getTypeOutputInfo}(t.oid, &foutoid, &typisvarlena);
-diff --git a/src/cppgres/list.hpp b/src/cppgres/list.hpp
-new file mode 100644
-index 0000000..ce85035
---- /dev/null
-+++ b/src/cppgres/list.hpp
-@@ -0,0 +1,70 @@
++#include <exception>
+ #include <iostream>
+ #include <utility>
+ 
+@@ -50,14 +51,66 @@ template <typename Func> struct ffi_guard {
+   }
+ };
+ 
 +/**
-+ * \file
++ * @brief Runs a callable under @ref cppgres::ffi_guard, degrading any failure to a warning
++ *
++ * Catches every exception — including Postgres errors surfaced as
++ * @ref cppgres::pg_exception — and reports the given message with `elog(WARNING)` instead of
++ * propagating. Intended for destructors and other cleanup paths where failure must degrade
++ * to a WARNING instead of propagating.
++ *
++ * @param f callable to run
++ * @param warning_message message to report at WARNING level if the callable fails
 + */
-+#pragma once
-+
-+#include "imports.h"
-+
-+#include <iterator>
-+#include <type_traits>
-+
-+namespace cppgres {
++template <typename Func> void ffi_guard_noexcept(Func f, const char *warning_message) noexcept {
++  try {
++    ffi_guard{std::move(f)}();
++  } catch (...) {
++    elog(WARNING, "%s", warning_message);
++  }
++}
 +
 +/**
-+ * @brief Typed, range-for-iterable view over a PostgreSQL ::List.
++ * @brief Scope guard that runs the callable only when the scope is left via an exception
 + *
-+ * The element type selects the cell accessor: pointer types read `lfirst`,
-+ * `int` reads `lfirst_int`, ::Oid reads `lfirst_oid`.
-+ *
-+ * A NIL (null) list is an empty range.
-+ *
-+ * ```
-+ * for (auto *tle : cppgres::list<TargetEntry *>(query->targetList)) { ... }
-+ * ```
++ * A scope-fail guard (per `std::uncaught_exceptions`): the destructor compares the number of
++ * in-flight exceptions against the count captured at construction and, only when the scope is
++ * being unwound by an exception, runs the callable through @ref cppgres::ffi_guard_noexcept —
++ * so the cleanup itself never throws, degrading any failure to a WARNING with the given
++ * message.
 + */
-+template <typename T = void *> struct list {
-+  explicit list(::List *l) : list_(l) {}
++template <typename Func> struct scope_fail {
++  Func func;
++  const char *warning_message;
++  int uncaught = std::uncaught_exceptions();
 +
-+  struct iterator {
-+    using iterator_category = std::forward_iterator_tag;
-+    using value_type = T;
-+    using difference_type = std::ptrdiff_t;
++  scope_fail(Func f, const char *warning_message)
++      : func(std::move(f)), warning_message(warning_message) {}
 +
-+    ::ListCell *cell = nullptr;
-+
-+    T operator*() const {
-+      if constexpr (std::is_pointer_v<T>) {
-+        return static_cast<T>(lfirst(cell));
-+      } else if constexpr (std::is_same_v<T, ::Oid>) {
-+        return lfirst_oid(cell);
-+      } else {
-+        static_assert(std::is_same_v<T, int>, "unsupported list element type");
-+        return lfirst_int(cell);
-+      }
++  ~scope_fail() {
++    if (std::uncaught_exceptions() > uncaught) {
++      ffi_guard_noexcept(func, warning_message);
 +    }
++  }
 +
-+    iterator &operator++() {
-+      ++cell;
-+      return *this;
-+    }
-+    iterator operator++(int) {
-+      auto ret = *this;
-+      ++cell;
-+      return ret;
-+    }
-+    bool operator==(const iterator &) const = default;
-+  };
-+
-+  iterator begin() const { return {list_ == NIL ? nullptr : &list_->elements[0]}; }
-+  iterator end() const { return {list_ == NIL ? nullptr : &list_->elements[list_->length]}; }
-+
-+  size_t size() const { return list_ == NIL ? 0 : static_cast<size_t>(list_->length); }
-+  bool empty() const { return list_ == NIL; }
-+
-+  operator ::List *() const { return list_; }
-+
-+private:
-+  ::List *list_;
++  scope_fail(const scope_fail &) = delete;
++  scope_fail &operator=(const scope_fail &) = delete;
++  scope_fail(scope_fail &&) = delete;
++  scope_fail &operator=(scope_fail &&) = delete;
 +};
 +
-+} // namespace cppgres
++template <typename Func> scope_fail(Func, const char *) -> scope_fail<Func>;
++
+ /**
+  * @brief Wraps a C++ function to catch exceptions and report them as Postgres errors
+  *
+  * It ensures that if the C++ exception throws an error, it'll be caught and transformed into
+  * a Postgres error report.
+  *
+- * @note It will also handle Postgres errors caught during the call that were automatically transformed
+- *       into @ref cppgres::pg_exception by @ref cppgres::ffi_guard and report them as errors.
++ * @note Postgres errors caught during the call that were automatically transformed into
++ *       @ref cppgres::pg_exception by @ref cppgres::ffi_guard are rethrown to Postgres with
++ *       full fidelity (SQLSTATE, detail, hint, context preserved) via
++ *       @ref cppgres::pg_exception::rethrow.
+  *
+  * @tparam Func C++ function to call
+  */
+@@ -70,8 +123,8 @@ template <typename Func> struct exception_guard {
+   auto operator()(Args &&...args) -> decltype(func(std::forward<Args>(args)...)) {
+     try {
+       return func(std::forward<Args>(args)...);
+-    } catch (const pg_exception &e) {
+-      error(e);
++    } catch (pg_exception &e) {
++      e.rethrow();
+     } catch (const std::exception &e) {
+       report(ERROR, "exception: %s", e.what());
+     } catch (...) {
 diff --git a/src/cppgres/resource_owner.hpp b/src/cppgres/resource_owner.hpp
 new file mode 100644
 index 0000000..e0bf446
@@ -386,10 +275,10 @@ index 0000000..e0bf446
 +
 +} // namespace cppgres
 diff --git a/src/cppgres/xact.hpp b/src/cppgres/xact.hpp
-index 344fb94..9d3cd27 100644
+index 344fb94..10c4e77 100644
 --- a/src/cppgres/xact.hpp
 +++ b/src/cppgres/xact.hpp
-@@ -3,7 +3,9 @@
+@@ -3,12 +3,16 @@
   */
  #pragma once
  
@@ -400,7 +289,14 @@ index 344fb94..9d3cd27 100644
  
  extern "C" {
  #include <access/xact.h>
-@@ -47,42 +49,86 @@ private:
+ }
+ 
++#include "guard.hpp"
++
+ namespace cppgres {
+ 
+ using command_id = ::CommandId;
+@@ -47,42 +51,86 @@ private:
  
  static_assert(sizeof(transaction_id) == sizeof(::TransactionId));
  
@@ -459,15 +355,6 @@ index 344fb94..9d3cd27 100644
 +    ffi_guard{::ReleaseCurrentSubTransaction}();
 +    restore();
 +    finished = true;
-+  }
-+
-+  /**
-+   * @brief Roll the subtransaction back now
-+   */
-+  void rollback() {
-+    ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
-+    restore();
-+    finished = true;
    }
  
 -  ~internal_subtransaction() {
@@ -476,20 +363,29 @@ index 344fb94..9d3cd27 100644
 -      ffi_guard{::ReleaseCurrentSubTransaction}();
 -    } else {
 -      ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
++  /**
++   * @brief Roll the subtransaction back now
++   */
++  void rollback() {
++    ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
++    restore();
++    finished = true;
++  }
++
 +  ~internal_subtransaction() noexcept {
 +    if (finished) {
 +      return;
      }
 -    ::CurrentResourceOwner = owner;
-+    try {
-+      if (std::uncaught_exceptions() > uncaught || !should_commit) {
-+        ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
-+      } else {
-+        ffi_guard{::ReleaseCurrentSubTransaction}();
-+      }
-+    } catch (...) {
-+      elog(WARNING, "cppgres: finishing internal subtransaction failed");
-+    }
++    ffi_guard_noexcept(
++        [this] {
++          if (std::uncaught_exceptions() > uncaught || !should_commit) {
++            ::RollbackAndReleaseCurrentSubTransaction();
++          } else {
++            ::ReleaseCurrentSubTransaction();
++          }
++        },
++        "cppgres: finishing internal subtransaction failed");
 +    restore();
    }
  
