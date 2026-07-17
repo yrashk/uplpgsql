@@ -1,3 +1,15 @@
+diff --git a/src/cppgres.hpp b/src/cppgres.hpp
+index 95bf148..4fd56d5 100644
+--- a/src/cppgres.hpp
++++ b/src/cppgres.hpp
+@@ -73,6 +73,7 @@ using ::fmt::format;
+ #include "cppgres/function.hpp"
+ #include "cppgres/guard.hpp"
+ #include "cppgres/imports.h"
++#include "cppgres/list.hpp"
+ #include "cppgres/memory.hpp"
+ #include "cppgres/node.hpp"
+ #include "cppgres/record.hpp"
 diff --git a/src/cppgres/exception.hpp b/src/cppgres/exception.hpp
 index 861520b..147e9d3 100644
 --- a/src/cppgres/exception.hpp
@@ -112,3 +124,79 @@ index c943846..19de9a7 100644
    template <typename Ret, convertible_into_nullable_datum... Args>
    results<Ret> query(spi_plan<Args...> &query, Args &&...args) {
      return this->query<Ret, Args...>(query, options(), std::forward<Args>(args)...);
+diff --git a/src/cppgres/list.hpp b/src/cppgres/list.hpp
+new file mode 100644
+index 0000000..ce85035
+--- /dev/null
++++ b/src/cppgres/list.hpp
+@@ -0,0 +1,70 @@
++/**
++ * \file
++ */
++#pragma once
++
++#include "imports.h"
++
++#include <iterator>
++#include <type_traits>
++
++namespace cppgres {
++
++/**
++ * @brief Typed, range-for-iterable view over a PostgreSQL ::List.
++ *
++ * The element type selects the cell accessor: pointer types read `lfirst`,
++ * `int` reads `lfirst_int`, ::Oid reads `lfirst_oid`.
++ *
++ * A NIL (null) list is an empty range.
++ *
++ * ```
++ * for (auto *tle : cppgres::list<TargetEntry *>(query->targetList)) { ... }
++ * ```
++ */
++template <typename T = void *> struct list {
++  explicit list(::List *l) : list_(l) {}
++
++  struct iterator {
++    using iterator_category = std::forward_iterator_tag;
++    using value_type = T;
++    using difference_type = std::ptrdiff_t;
++
++    ::ListCell *cell = nullptr;
++
++    T operator*() const {
++      if constexpr (std::is_pointer_v<T>) {
++        return static_cast<T>(lfirst(cell));
++      } else if constexpr (std::is_same_v<T, ::Oid>) {
++        return lfirst_oid(cell);
++      } else {
++        static_assert(std::is_same_v<T, int>, "unsupported list element type");
++        return lfirst_int(cell);
++      }
++    }
++
++    iterator &operator++() {
++      ++cell;
++      return *this;
++    }
++    iterator operator++(int) {
++      auto ret = *this;
++      ++cell;
++      return ret;
++    }
++    bool operator==(const iterator &) const = default;
++  };
++
++  iterator begin() const { return {list_ == NIL ? nullptr : &list_->elements[0]}; }
++  iterator end() const { return {list_ == NIL ? nullptr : &list_->elements[list_->length]}; }
++
++  size_t size() const { return list_ == NIL ? 0 : static_cast<size_t>(list_->length); }
++  bool empty() const { return list_ == NIL; }
++
++  operator ::List *() const { return list_; }
++
++private:
++  ::List *list_;
++};
++
++} // namespace cppgres

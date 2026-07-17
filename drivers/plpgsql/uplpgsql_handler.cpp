@@ -255,7 +255,6 @@ uplpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source
 {
 	char	   *rawstring;
 	List	   *elemlist;
-	ListCell   *l;
 	int			extrachecks = 0;
 	int		   *myextra;
 
@@ -274,10 +273,8 @@ uplpgsql_extra_checks_check_hook(char **newvalue, void **extra, GucSource source
 			return false;
 		}
 
-		foreach(l, elemlist)
+		for (auto *tok : cppgres::list<char *>(elemlist))
 		{
-			char	   *tok = (char *) lfirst(l);
-
 			if (pg_strcasecmp(tok, "shadowed_variables") == 0)
 				extrachecks |= UPLPGSQL_XCHECK_SHADOWVAR;
 			else if (pg_strcasecmp(tok, "too_many_rows") == 0)

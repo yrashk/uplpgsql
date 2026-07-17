@@ -1,8 +1,9 @@
 /*-------------------------------------------------------------------------
  *
- * uplpgsql_expr.c
+ * upl_compile_expr.cpp
  *		Expression-level compilation: walk PG Expr trees and emit native
  *		LLVM IR, bypassing the ExprEvalStep interpreter entirely.
+ *		Expression half of uplpgsql::function_compiler (upl_compiler.hpp).
  *
  *		This is the heart of uplpgsql's performance optimization.  It
  *		implements a three-tier compilation strategy for PL/pgSQL expressions:
@@ -44,9 +45,10 @@
  *		  be inlined, the plan is freed so the runtime path can re-prepare
  *		  with exec_simple_check_plan (avoiding 30x+ SPI overhead).
  *
- *		Public API (called from uplpgsql_compile.c):
- *		  uplpgsql_try_compile_assign() — try to inline an assignment
- *		  uplpgsql_try_compile_bool()   — try to inline a boolean condition
+ *		Entry points (called from the statement compiler and, through the
+ *		cb_try_compile_bool trampoline, from the core engine):
+ *		  function_compiler::try_compile_assign() — inline an assignment
+ *		  function_compiler::try_compile_bool()   — inline a boolean condition
  *
  *
  * Copyright (c) 2003-2014, Jonah H. Harris <jonah.harris@gmail.com>
@@ -68,7 +70,7 @@
  * SPDX-License-Identifier: Apache-2.0
  *-------------------------------------------------------------------------
  */
-#include "upl_common.h"
+#include "upl_compiler.hpp"
 
 #include "cppgres.hpp"
 
@@ -81,15 +83,6 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
-
-/*
- * Convenience macros for accessing PL/pgSQL-specific lang_data fields.
- */
-#define ctx_lang(ctx)			UPLPGSQL_LANG_DATA(ctx)
-#define ctx_plstate(ctx)		(ctx_lang(ctx)->plstate_ref)
-#define ctx_func(ctx)			(ctx_lang(ctx)->uplpgsql_func)
-#define ctx_native_arrays(ctx)	(ctx_lang(ctx)->native_arrays)
-#define ctx_num_native_arrays(ctx) (ctx_lang(ctx)->num_native_arrays)
 
 #ifdef __cplusplus
 extern "C" {
@@ -108,6 +101,9 @@ extern "C" {
 #ifdef __cplusplus
 }
 #endif
+
+namespace uplpgsql
+{
 
 /*
  * Struct offsets for GEP-based variable access.
@@ -146,44 +142,11 @@ extern "C" {
 #define OFF_ERH_DNULLS			offsetof(ExpandedRecordHeader, dnulls)
 
 /*
- * Type classification for the expression compiler.
- *
- * Used by uplpgsql_classify_expr() to recursively determine whether an
- * entire expression tree can be compiled to Tier 1 native instructions.
- * Only expressions where ALL nodes classify to a known type (not UNKNOWN)
- * are eligible for Tier 1 compilation.  UNKNOWN falls through to Tier 2
- * or Tier 3.
+ * Forward declarations for file-static helpers (ExprTypeClass and the
+ * method declarations live in upl_compiler.hpp).
  */
-typedef enum ExprTypeClass
-{
-	EXPR_TYPE_INT4,
-	EXPR_TYPE_INT8,
-	EXPR_TYPE_FLOAT8,
-	EXPR_TYPE_BOOL,
-	EXPR_TYPE_UNKNOWN		/* not natively inlineable */
-} ExprTypeClass;
-
-/* Forward declarations */
-static Expr *uplpgsql_prepare_and_get_expr(UPL_compile_ctx *ctx,
-										   UPLpgSQL_expr *expr);
-static ExprTypeClass uplpgsql_classify_expr(Expr *expr);
-static llvm::Value *uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx,
-												Expr *expr,
-												llvm::Value *estate_ref,
-												ExprTypeClass *result_type);
-static llvm::Value *uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx,
-											   Expr *expr,
-											   llvm::Value *estate_ref);
-
-/* Tier 2: fmgr bypass */
-static bool uplpgsql_can_fmgr_compile(Expr *expr);
-static llvm::Value *uplpgsql_compile_expr_fmgr(UPL_compile_ctx *ctx,
-											    Expr *expr,
-											    llvm::Value *estate_ref);
-static llvm::Value *uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx,
-													 Expr *expr,
-													 llvm::Value *estate_ref,
-													 llvm::Value **isnull_out);
+static ExprTypeClass classify_expr(Expr *expr);
+static bool can_fmgr_compile(Expr *expr);
 
 /* Helpers */
 static inline llvm::BasicBlock *
@@ -193,41 +156,11 @@ expr_append_block(UPL_compile_ctx *ctx, const char *name)
 }
 
 /*
- * Look up whether a datum number corresponds to a native local array
- * (one that passed escape analysis in Phase 7).
- * Returns the UPLpgSQL_native_array metadata if found, NULL otherwise.
- * When NULL, the caller should use the standard PG array path
- * (RT_ARRAY_GET_ELEMENT / RT_ARRAY_SET_ELEMENT).
- */
-static UPLpgSQL_native_array *
-find_native_array(UPL_compile_ctx *ctx, int dno)
-{
-	int		i;
-
-	for (i = 0; i < ctx_num_native_arrays(ctx); i++)
-	{
-		if (ctx_native_arrays(ctx)[i].dno == dno)
-			return &ctx_native_arrays(ctx)[i];
-	}
-	return NULL;
-}
-
-/*
  * Resolve array element type info at compile time and emit LLVM constants.
  * Avoids repeated get_element_type()/get_typlenbyvalalign() at runtime.
  */
-typedef struct ArrayTypeInfo
-{
-	llvm::Value	*typlen_val;		/* i32: array type length (-1 for varlena) */
-	llvm::Value	*elemtype_val;	/* i32: element type OID */
-	llvm::Value	*elmlen_val;		/* i16: element length */
-	llvm::Value	*elmbyval_val;	/* i1: element pass-by-value */
-	llvm::Value	*elmalign_val;	/* i8: element alignment */
-} ArrayTypeInfo;
-
-static void
-resolve_array_type_info(UPL_compile_ctx *ctx, int array_dno,
-						ArrayTypeInfo *info)
+void
+function_compiler::resolve_array_type_info(int array_dno, ArrayTypeInfo *info)
 {
 	UPLpgSQL_var   *arrayvar;
 	Oid				elemtype;
@@ -235,7 +168,7 @@ resolve_array_type_info(UPL_compile_ctx *ctx, int array_dno,
 	bool			elmbyval;
 	char			elmalign;
 
-	arrayvar = (UPLpgSQL_var *) ctx_func(ctx)->datums[array_dno];
+	arrayvar = (UPLpgSQL_var *) func_->datums[array_dno];
 	elemtype = get_element_type(arrayvar->datatype->typoid);
 	get_typlenbyvalalign(elemtype, &elmlen, &elmbyval, &elmalign);
 
@@ -263,9 +196,8 @@ resolve_array_type_info(UPL_compile_ctx *ctx, int array_dno,
 /*
  * Emit IR to load a variable's Datum (i64) via struct offset GEPs.
  */
-static llvm::Value *
-uplpgsql_emit_load_var_datum(UPL_compile_ctx *ctx,
-							llvm::Value *estate_ref, int dno)
+llvm::Value *
+function_compiler::emit_load_var_datum(llvm::Value *estate_ref, int dno)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i8 = ctx->types[UPL_INT8];
@@ -300,15 +232,14 @@ uplpgsql_emit_load_var_datum(UPL_compile_ctx *ctx,
  * for plain vars, uses the fast GEP path.
  *
  * Phase 5d optimization: when the parent record has a compile-time erh
- * (installed by uplpgsql_compile_fors), we resolve the field number at
+ * (installed by compile_fors), we resolve the field number at
  * compile time and emit inline LLVM IR to GEP directly into
  * erh->dvalues[fnumber-1], with a slow-path fallback to RT_GET_RECFIELD.
  */
-static llvm::Value *
-uplpgsql_emit_load_param_datum(UPL_compile_ctx *ctx,
-							   llvm::Value *estate_ref, int dno)
+llvm::Value *
+function_compiler::emit_load_param_datum(llvm::Value *estate_ref, int dno)
 {
-	UPLpgSQL_datum *d = ctx_func(ctx)->datums[dno];
+	UPLpgSQL_datum *d = func_->datums[dno];
 	UPLpgSQL_native_array *na;
 
 	/*
@@ -319,12 +250,12 @@ uplpgsql_emit_load_param_datum(UPL_compile_ctx *ctx,
 	 * here, they GEP into data_ptr via the T_SubscriptingRef case — so the
 	 * cost falls only on genuine escapes.
 	 */
-	na = find_native_array(ctx, dno);
+	na = find_native_array(dno);
 	if (na != NULL)
 	{
 		elog(DEBUG1, "uplpgsql: native array to_datum dno %d (whole-datum read)",
 			 dno);
-		uplpgsql_emit_sync_native_array(ctx, na);
+		emit_sync_native_array(na);
 	}
 
 	/*
@@ -346,7 +277,7 @@ uplpgsql_emit_load_param_datum(UPL_compile_ctx *ctx,
 		UPLpgSQL_recfield  *recfield = (UPLpgSQL_recfield *) d;
 		UPLpgSQL_rec	   *rec;
 
-		rec = (UPLpgSQL_rec *) ctx_func(ctx)->datums[recfield->recparentno];
+		rec = (UPLpgSQL_rec *) func_->datums[recfield->recparentno];
 
 		/*
 		 * Fast path: parent record has a compile-time erh (Phase 5d).
@@ -462,7 +393,7 @@ uplpgsql_emit_load_param_datum(UPL_compile_ctx *ctx,
 		}
 	}
 
-	return uplpgsql_emit_load_var_datum(ctx, estate_ref, dno);
+	return emit_load_var_datum(estate_ref, dno);
 }
 
 /*
@@ -470,11 +401,10 @@ uplpgsql_emit_load_param_datum(UPL_compile_ctx *ctx,
  * conservatively return false (not-null) — matching the existing Tier 1
  * behavior of not null-checking variable loads.
  */
-static llvm::Value *
-uplpgsql_emit_load_param_isnull(UPL_compile_ctx *ctx,
-								llvm::Value *estate_ref, int dno)
+llvm::Value *
+function_compiler::emit_load_param_isnull(llvm::Value *estate_ref, int dno)
 {
-	UPLpgSQL_datum *d = ctx_func(ctx)->datums[dno];
+	UPLpgSQL_datum *d = func_->datums[dno];
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type *i1 = ctx->types[UPL_INT1];
 	UPLpgSQL_native_array *na;
@@ -490,9 +420,9 @@ uplpgsql_emit_load_param_isnull(UPL_compile_ctx *ctx,
 	 * isnull first), so sync here as well as in the datum load; otherwise
 	 * a live array reads back as NULL.
 	 */
-	na = find_native_array(ctx, dno);
+	na = find_native_array(dno);
 	if (na != NULL)
-		uplpgsql_emit_sync_native_array(ctx, na);
+		emit_sync_native_array(na);
 
 	/* For plain vars: load datum->isnull */
 	{
@@ -575,7 +505,7 @@ emit_native_array_elem_isnull(UPL_compile_ctx *ctx,
  * comparison operators, and the numeric casts all return NULL if any input is
  * NULL — so an expression is NULL exactly when some leaf is.  That lets the
  * caller decide nullness once, up front, instead of threading an isnull flag
- * through each node.  uplpgsql_classify_expr() keeps the non-strict operators
+ * through each node.  classify_expr() keeps the non-strict operators
  * (AND/OR/NOT) out of Tier 1 precisely so this holds.
  *
  * Constants are never null here: classify_expr() rejects a null Const.
@@ -583,9 +513,8 @@ emit_native_array_elem_isnull(UPL_compile_ctx *ctx,
  * Returns an i1, or NULL if the expression has no nullable leaf at all (a
  * constant expression), letting the caller skip the check entirely.
  */
-static llvm::Value *
-tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
-					llvm::Value *estate_ref)
+llvm::Value *
+function_compiler::tier1_expr_any_null(Expr *expr, llvm::Value *estate_ref)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 
@@ -602,12 +531,12 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 			{
 				Param *p = (Param *) expr;
 
-				return uplpgsql_emit_load_param_isnull(ctx, estate_ref,
+				return emit_load_param_isnull(estate_ref,
 													  p->paramid - 1);
 			}
 
 		case T_RelabelType:
-			return tier1_expr_any_null(ctx, ((RelabelType *) expr)->arg,
+			return tier1_expr_any_null(((RelabelType *) expr)->arg,
 									   estate_ref);
 
 		case T_SubscriptingRef:
@@ -633,19 +562,17 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 				 */
 				SubscriptingRef *s = (SubscriptingRef *) expr;
 				llvm::Value	*acc = NULL;
-				ListCell	   *lc;
 				UPLpgSQL_native_array *na = NULL;
 
 				if (IsA(s->refexpr, Param) &&
 					list_length(s->refupperindexpr) == 1)
-					na = find_native_array(ctx,
-										   ((Param *) s->refexpr)->paramid - 1);
+					na = find_native_array(((Param *) s->refexpr)->paramid - 1);
 
 				/*
 				 * Do NOT ask whether the array variable itself is NULL when it
 				 * is native.
 				 *
-				 * That question goes through uplpgsql_emit_load_param_isnull(),
+				 * That question goes through emit_load_param_isnull(),
 				 * which treats reading a native array's variable as a
 				 * whole-datum escape and marshals the entire array back out to
 				 * its Datum first.  In a loop over a[i] that is a full array
@@ -656,12 +583,11 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 				 * array, so the range test below already answers NULL for it.
 				 */
 				if (na == NULL)
-					acc = tier1_expr_any_null(ctx, s->refexpr, estate_ref);
+					acc = tier1_expr_any_null(s->refexpr, estate_ref);
 
-				foreach(lc, s->refupperindexpr)
+				for (auto *subexpr : cppgres::list<Expr *>(s->refupperindexpr))
 				{
-					llvm::Value *v = tier1_expr_any_null(ctx,
-														 (Expr *) lfirst(lc),
+					llvm::Value *v = tier1_expr_any_null(subexpr,
 														 estate_ref);
 					if (v == NULL)
 						continue;
@@ -675,8 +601,7 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 					ExprTypeClass	idx_class;
 					llvm::Value	*idx, *len, *lb, *oob;
 
-					idx = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) linitial(s->refupperindexpr), estate_ref,
+					idx = compile_expr_datum((Expr *) linitial(s->refupperindexpr), estate_ref,
 						&idx_class);
 					if (idx_class == EXPR_TYPE_INT8)
 						idx = builder->CreateTrunc(idx, i32, "na.idx32");
@@ -750,8 +675,7 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 					llvm::Value	*idx, *isnull_ptr, *elem_null;
 					llvm::BasicBlock *entry_bb;
 
-					idx = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) linitial(s->refupperindexpr), estate_ref,
+					idx = compile_expr_datum((Expr *) linitial(s->refupperindexpr), estate_ref,
 						&idx_class);
 					if (idx_class == EXPR_TYPE_INT8)
 						idx = builder->CreateTrunc(idx, i32, "sref.idx32");
@@ -768,7 +692,7 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 					{
 						ArrayTypeInfo ati;
 
-						resolve_array_type_info(ctx, array_dno, &ati);
+						resolve_array_type_info(array_dno, &ati);
 						{
 							llvm::Value *args[] = {
 								estate_ref,
@@ -799,12 +723,10 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
 				List	   *args = IsA(expr, OpExpr) ? ((OpExpr *) expr)->args
 													 : ((FuncExpr *) expr)->args;
 				llvm::Value *acc = NULL;
-				ListCell   *lc;
 
-				foreach(lc, args)
+				for (auto *subexpr : cppgres::list<Expr *>(args))
 				{
-					llvm::Value *v = tier1_expr_any_null(ctx,
-														 (Expr *) lfirst(lc),
+					llvm::Value *v = tier1_expr_any_null(subexpr,
 														 estate_ref);
 					if (v == NULL)
 						continue;
@@ -837,17 +759,17 @@ tier1_expr_any_null(UPL_compile_ctx *ctx, Expr *expr,
  * with y NULL stores a NULL element, it does not raise division_by_zero.
  *
  * The scalar assignment path already branches this way (see
- * uplpgsql_try_compile_assign); this is the same branch for value positions
+ * try_compile_assign); this is the same branch for value positions
  * that consume the result as an SSA value rather than a store, so the NULL
  * edge contributes a placeholder zero through a phi.  Every caller passes
  * *isnull_out alongside the value, and nothing looks at the value when the
  * flag is set.
  */
-static llvm::Value *
-tier1_compile_value_guarded(UPL_compile_ctx *ctx, Expr *val_expr,
-							llvm::Value *estate_ref,
-							ExprTypeClass *val_class,
-							llvm::Value **isnull_out)
+llvm::Value *
+function_compiler::tier1_compile_value_guarded(Expr *val_expr,
+											   llvm::Value *estate_ref,
+											   ExprTypeClass *val_class,
+											   llvm::Value **isnull_out)
 {
 	llvm::Type			*vty;
 	llvm::Value		   *computed;
@@ -856,11 +778,11 @@ tier1_compile_value_guarded(UPL_compile_ctx *ctx, Expr *val_expr,
 	llvm::BasicBlock	*blocks[2];
 	llvm::BasicBlock	*compute_bb, *join_bb, *from_bb;
 
-	*isnull_out = tier1_expr_any_null(ctx, val_expr, estate_ref);
+	*isnull_out = tier1_expr_any_null(val_expr, estate_ref);
 	if (*isnull_out == NULL)
 	{
 		/* Nothing nullable in it — compute unconditionally. */
-		return uplpgsql_compile_expr_datum(ctx, val_expr, estate_ref,
+		return compile_expr_datum(val_expr, estate_ref,
 										   val_class);
 	}
 
@@ -880,7 +802,7 @@ tier1_compile_value_guarded(UPL_compile_ctx *ctx, Expr *val_expr,
 	ctx->builder->CreateCondBr(*isnull_out, join_bb, compute_bb);
 
 	ctx->builder->SetInsertPoint(compute_bb);
-	computed = uplpgsql_compile_expr_datum(ctx, val_expr, estate_ref,
+	computed = compile_expr_datum(val_expr, estate_ref,
 										   val_class);
 	vals[1] = computed;
 	blocks[1] = ctx->builder->GetInsertBlock();
@@ -900,10 +822,10 @@ tier1_compile_value_guarded(UPL_compile_ctx *ctx, Expr *val_expr,
  * Emit IR to store a Datum (i64) into a variable.
  * Sets value, isnull=false, freeval=false.
  */
-static void
-uplpgsql_emit_store_var_datum(UPL_compile_ctx *ctx,
-							 llvm::Value *estate_ref, int dno,
-							 llvm::Value *datum_val)
+void
+function_compiler::emit_store_var_datum(llvm::Value *estate_ref,
+										int dno,
+										llvm::Value *datum_val)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i8 = ctx->types[UPL_INT8];
@@ -942,14 +864,14 @@ uplpgsql_emit_store_var_datum(UPL_compile_ctx *ctx,
 /*
  * Emit IR to store a Datum plus a computed isnull (i1) into a variable.
  *
- * Like uplpgsql_emit_store_var_datum(), but takes nullness from a value
+ * Like emit_store_var_datum(), but takes nullness from a value
  * rather than assuming not-null.  Pass-by-value targets only.
  */
-static void
-uplpgsql_emit_store_var_datum_isnull(UPL_compile_ctx *ctx,
-									 llvm::Value *estate_ref, int dno,
-									 llvm::Value *datum_val,
-									 llvm::Value *isnull_val)
+void
+function_compiler::emit_store_var_datum_isnull(llvm::Value *estate_ref,
+											   int dno,
+											   llvm::Value *datum_val,
+											   llvm::Value *isnull_val)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i8 = ctx->types[UPL_INT8];
@@ -985,14 +907,13 @@ uplpgsql_emit_store_var_datum_isnull(UPL_compile_ctx *ctx,
 /*
  * Emit IR to set a variable to NULL: value = 0, isnull = true.
  *
- * The pass-by-value counterpart of uplpgsql_emit_store_var_datum(), which
+ * The pass-by-value counterpart of emit_store_var_datum(), which
  * always clears isnull.  Only valid for pass-by-value targets — a
  * pass-by-reference variable would need assign_simple_var() to release its
  * old value, which is why Tier 1 only ever assigns scalars.
  */
-static void
-uplpgsql_emit_store_var_null(UPL_compile_ctx *ctx,
-							 llvm::Value *estate_ref, int dno)
+void
+function_compiler::emit_store_var_null(llvm::Value *estate_ref, int dno)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i8 = ctx->types[UPL_INT8];
@@ -1043,8 +964,8 @@ uplpgsql_emit_store_var_null(UPL_compile_ctx *ctx,
  * At JIT compile time, no execution state exists yet, so we create a
  * minimal temporary execstate backed by the function's datums array.
  */
-static Expr *
-uplpgsql_prepare_and_get_expr(UPL_compile_ctx *ctx, UPLpgSQL_expr *expr)
+Expr *
+function_compiler::prepare_and_get_expr(UPLpgSQL_expr *expr)
 {
 	SPIPlanPtr		plan;
 	SPIPrepareOptions options;
@@ -1052,7 +973,7 @@ uplpgsql_prepare_and_get_expr(UPL_compile_ctx *ctx, UPLpgSQL_expr *expr)
 	CachedPlanSource *plansource;
 	Query		   *query;
 	TargetEntry	   *tle;
-	UPLpgSQL_function *func = ctx_func(ctx);
+	UPLpgSQL_function *func = func_;
 
 	if (expr->plan == NULL)
 	{
@@ -1145,7 +1066,7 @@ uplpgsql_prepare_and_get_expr(UPL_compile_ctx *ctx, UPLpgSQL_expr *expr)
  * Returns EXPR_TYPE_UNKNOWN if the expression cannot be natively compiled.
  */
 static ExprTypeClass
-uplpgsql_classify_expr(Expr *expr)
+classify_expr(Expr *expr)
 {
 	if (expr == NULL)
 		return EXPR_TYPE_UNKNOWN;
@@ -1196,10 +1117,9 @@ uplpgsql_classify_expr(Expr *expr)
 					fid == F_INT4MUL || fid == F_INT4DIV ||
 					fid == F_INT4MOD || fid == F_INT4UM)
 				{
-					ListCell *lc;
-					foreach(lc, op->args)
+					for (auto *subexpr : cppgres::list<Expr *>(op->args))
 					{
-						if (uplpgsql_classify_expr((Expr *) lfirst(lc)) != EXPR_TYPE_INT4)
+						if (classify_expr(subexpr) != EXPR_TYPE_INT4)
 							return EXPR_TYPE_UNKNOWN;
 					}
 					return EXPR_TYPE_INT4;
@@ -1210,10 +1130,9 @@ uplpgsql_classify_expr(Expr *expr)
 					fid == F_INT8MUL || fid == F_INT8DIV ||
 					fid == F_INT8MOD || fid == F_INT8UM)
 				{
-					ListCell *lc;
-					foreach(lc, op->args)
+					for (auto *subexpr : cppgres::list<Expr *>(op->args))
 					{
-						if (uplpgsql_classify_expr((Expr *) lfirst(lc)) != EXPR_TYPE_INT8)
+						if (classify_expr(subexpr) != EXPR_TYPE_INT8)
 							return EXPR_TYPE_UNKNOWN;
 					}
 					return EXPR_TYPE_INT8;
@@ -1232,10 +1151,9 @@ uplpgsql_classify_expr(Expr *expr)
 					fid == F_FLOAT8MUL || fid == F_FLOAT8DIV ||
 					fid == F_FLOAT8UM)
 				{
-					ListCell *lc;
-					foreach(lc, op->args)
+					for (auto *subexpr : cppgres::list<Expr *>(op->args))
 					{
-						if (uplpgsql_classify_expr((Expr *) lfirst(lc)) != EXPR_TYPE_FLOAT8)
+						if (classify_expr(subexpr) != EXPR_TYPE_FLOAT8)
 							return EXPR_TYPE_UNKNOWN;
 					}
 					return EXPR_TYPE_FLOAT8;
@@ -1248,8 +1166,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1261,8 +1179,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1281,8 +1199,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_FLOAT8 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_FLOAT8)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_FLOAT8 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_FLOAT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1292,8 +1210,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_BOOL ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_BOOL)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_BOOL ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_BOOL)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1305,8 +1223,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1316,8 +1234,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1328,8 +1246,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_INT8;
 				}
@@ -1338,8 +1256,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
-						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
+					if (classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
+						classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_INT8;
 				}
@@ -1357,8 +1275,8 @@ uplpgsql_classify_expr(Expr *expr)
 					(f->funcid == F_DPOW ||
 					 f->funcid == F_POW_FLOAT8_FLOAT8 ||
 					 f->funcid == F_POWER_FLOAT8_FLOAT8) &&
-					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8 &&
-					uplpgsql_classify_expr((Expr *) lsecond(f->args)) == EXPR_TYPE_FLOAT8)
+					classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8 &&
+					classify_expr((Expr *) lsecond(f->args)) == EXPR_TYPE_FLOAT8)
 					return EXPR_TYPE_FLOAT8;
 
 				if (nargs != 1)
@@ -1366,15 +1284,15 @@ uplpgsql_classify_expr(Expr *expr)
 
 				/* ABS functions */
 				if (f->funcid == F_INT4ABS &&
-					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_INT4)
+					classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_INT4)
 					return EXPR_TYPE_INT4;
 
 				if (f->funcid == F_INT8ABS &&
-					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_INT8)
+					classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_INT8)
 					return EXPR_TYPE_INT8;
 
 				if (f->funcid == F_FLOAT8ABS &&
-					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8)
+					classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8)
 					return EXPR_TYPE_FLOAT8;
 
 				/* Single-arg float8 math intrinsics */
@@ -1389,7 +1307,7 @@ uplpgsql_classify_expr(Expr *expr)
 					 f->funcid == F_LN_FLOAT8 ||
 					 f->funcid == F_SIN ||
 					 f->funcid == F_COS) &&
-					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8)
+					classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8)
 					return EXPR_TYPE_FLOAT8;
 
 				/*
@@ -1401,7 +1319,7 @@ uplpgsql_classify_expr(Expr *expr)
 				if (f->funcid == F_FLOAT8_INT4 || f->funcid == F_FLOAT8_INT2)
 				{
 					ExprTypeClass argclass =
-						uplpgsql_classify_expr((Expr *) linitial(f->args));
+						classify_expr((Expr *) linitial(f->args));
 					if (argclass == EXPR_TYPE_INT4)
 						return EXPR_TYPE_FLOAT8;
 				}
@@ -1409,7 +1327,7 @@ uplpgsql_classify_expr(Expr *expr)
 				if (f->funcid == F_FLOAT8_INT8)
 				{
 					ExprTypeClass argclass =
-						uplpgsql_classify_expr((Expr *) linitial(f->args));
+						classify_expr((Expr *) linitial(f->args));
 					if (argclass == EXPR_TYPE_INT8)
 						return EXPR_TYPE_FLOAT8;
 				}
@@ -1430,7 +1348,7 @@ uplpgsql_classify_expr(Expr *expr)
 			}
 
 		case T_RelabelType:
-			return uplpgsql_classify_expr(((RelabelType *) expr)->arg);
+			return classify_expr(((RelabelType *) expr)->arg);
 
 		case T_BoolExpr:
 			/*
@@ -1458,7 +1376,7 @@ uplpgsql_classify_expr(Expr *expr)
 					sbsref->reflowerindexpr == NIL &&
 					IsA(sbsref->refexpr, Param) &&
 					((Param *) sbsref->refexpr)->paramkind == PARAM_EXTERN &&
-					uplpgsql_classify_expr((Expr *) linitial(sbsref->refupperindexpr)) == EXPR_TYPE_INT4)
+					classify_expr((Expr *) linitial(sbsref->refupperindexpr)) == EXPR_TYPE_INT4)
 				{
 					Oid elemtype = sbsref->refrestype;
 
@@ -1485,7 +1403,7 @@ uplpgsql_classify_expr(Expr *expr)
  * ================================================================
  */
 
-UPL_RT_EXPORT void
+extern "C" UPL_RT_EXPORT void
 uplpgsql_rt_int_overflow(void)
 {
 	ereport(ERROR,
@@ -1493,7 +1411,7 @@ uplpgsql_rt_int_overflow(void)
 			 errmsg("integer out of range")));
 }
 
-UPL_RT_EXPORT void
+extern "C" UPL_RT_EXPORT void
 uplpgsql_rt_div_zero(void)
 {
 	ereport(ERROR,
@@ -1502,7 +1420,7 @@ uplpgsql_rt_div_zero(void)
 }
 
 /* Mirrors array_subscript_assign(); see emit_set_subscript_null_check(). */
-UPL_RT_EXPORT void
+extern "C" UPL_RT_EXPORT void
 uplpgsql_rt_array_subscript_null(void)
 {
 	ereport(ERROR,
@@ -1552,14 +1470,14 @@ emit_error_call(UPL_compile_ctx *ctx, const char *fn_name)
  * out-of-range one raises here rather than fetching a garbage index from
  * past the end of the flat buffer.
  */
-static void
-emit_set_subscript_null_check(UPL_compile_ctx *ctx, Expr *idx_expr,
-							  llvm::Value *estate_ref)
+void
+function_compiler::emit_set_subscript_null_check(Expr *idx_expr,
+												 llvm::Value *estate_ref)
 {
 	llvm::Value		*idx_isnull;
 	llvm::BasicBlock	*null_bb, *ok_bb;
 
-	idx_isnull = tier1_expr_any_null(ctx, idx_expr, estate_ref);
+	idx_isnull = tier1_expr_any_null(idx_expr, estate_ref);
 	if (idx_isnull == NULL)
 		return;					/* nothing in the subscript can be NULL */
 
@@ -2023,17 +1941,17 @@ emit_int_abs(UPL_compile_ctx *ctx, llvm::Value *arg,
  * Returns an llvm::Value * in the native type (i32, i64, or double).
  * Sets *result_type to the type class of the result.
  */
-static llvm::Value *
-uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
-							llvm::Value *estate_ref,
-							ExprTypeClass *result_type)
+llvm::Value *
+function_compiler::compile_expr_datum(Expr *expr,
+									  llvm::Value *estate_ref,
+									  ExprTypeClass *result_type)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i32 = ctx->types[UPL_INT32];
 	llvm::Type		*i64 = ctx->types[UPL_INT64];
 	llvm::Type		*dbl = ctx->types[UPL_DOUBLE];
 
-	*result_type = uplpgsql_classify_expr(expr);
+	*result_type = classify_expr(expr);
 
 	switch (nodeTag(expr))
 	{
@@ -2061,7 +1979,7 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 				int			dno = p->paramid - 1;
 				llvm::Value *datum;
 
-				datum = uplpgsql_emit_load_param_datum(ctx, estate_ref, dno);
+				datum = emit_load_param_datum(estate_ref, dno);
 
 				switch (*result_type)
 				{
@@ -2092,10 +2010,8 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 					ExprTypeClass ltype, rtype;
 					llvm::Value *lhs, *rhs;
 
-					lhs = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) linitial(op->args), estate_ref, &ltype);
-					rhs = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) lsecond(op->args), estate_ref, &rtype);
+					lhs = compile_expr_datum((Expr *) linitial(op->args), estate_ref, &ltype);
+					rhs = compile_expr_datum((Expr *) lsecond(op->args), estate_ref, &rtype);
 
 					/* --- int4 arithmetic --- */
 					if (fid == F_INT4PL)
@@ -2187,8 +2103,7 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 					ExprTypeClass atype;
 					llvm::Value *arg;
 
-					arg = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) linitial(op->args), estate_ref, &atype);
+					arg = compile_expr_datum((Expr *) linitial(op->args), estate_ref, &atype);
 
 					if (fid == F_INT4UM)
 						return emit_int_negate(ctx, arg, i32,
@@ -2235,10 +2150,8 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 					llvm::Value *lhs, *rhs;
 					ExprTypeClass ltype, rtype;
 
-					lhs = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) linitial(f->args), estate_ref, &ltype);
-					rhs = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) lsecond(f->args), estate_ref, &rtype);
+					lhs = compile_expr_datum((Expr *) linitial(f->args), estate_ref, &ltype);
+					rhs = compile_expr_datum((Expr *) lsecond(f->args), estate_ref, &rtype);
 
 					{
 						llvm::Function *fn;
@@ -2254,8 +2167,7 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 					}
 				}
 
-				arg = uplpgsql_compile_expr_datum(ctx,
-					(Expr *) linitial(f->args), estate_ref, &atype);
+				arg = compile_expr_datum((Expr *) linitial(f->args), estate_ref, &atype);
 
 				if (f->funcid == F_INT4ABS)
 					return emit_int_abs(ctx, arg, i32, (uint32) PG_INT32_MIN);
@@ -2323,8 +2235,7 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 			}
 
 		case T_RelabelType:
-			return uplpgsql_compile_expr_datum(ctx,
-				((RelabelType *) expr)->arg, estate_ref, result_type);
+			return compile_expr_datum(((RelabelType *) expr)->arg, estate_ref, result_type);
 
 		case T_SubscriptingRef:
 			{
@@ -2337,10 +2248,10 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 				UPLpgSQL_native_array *na;
 
 				/* Compile the subscript index to native i32 */
-				idx_val = uplpgsql_compile_expr_datum(ctx, idx_expr,
+				idx_val = compile_expr_datum(idx_expr,
 													  estate_ref, &idx_class);
 
-				na = find_native_array(ctx, array_dno);
+				na = find_native_array(array_dno);
 				if (na != NULL)
 				{
 					/*
@@ -2385,7 +2296,7 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
 					{
 						ArrayTypeInfo ati;
 
-						resolve_array_type_info(ctx, array_dno, &ati);
+						resolve_array_type_info(array_dno, &ati);
 						{
 							llvm::Value *args[] = {
 								estate_ref,
@@ -2428,9 +2339,8 @@ uplpgsql_compile_expr_datum(UPL_compile_ctx *ctx, Expr *expr,
  * Compile a boolean expression tree to LLVM IR.
  * Returns an llvm::Value * of type i1.
  */
-static llvm::Value *
-uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
-						   llvm::Value *estate_ref)
+llvm::Value *
+function_compiler::compile_expr_bool(Expr *expr, llvm::Value *estate_ref)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i1 = ctx->types[UPL_INT1];
@@ -2451,7 +2361,7 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
 				int			dno = p->paramid - 1;
 				llvm::Value *datum;
 
-				datum = uplpgsql_emit_load_param_datum(ctx, estate_ref, dno);
+				datum = emit_load_param_datum(estate_ref, dno);
 				return builder->CreateTrunc(datum, i1, "bool.val");
 			}
 
@@ -2518,10 +2428,8 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
 					ExprTypeClass lt, rt;
 					llvm::Value *lhs, *rhs;
 
-					lhs = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) linitial(op->args), estate_ref, &lt);
-					rhs = uplpgsql_compile_expr_datum(ctx,
-						(Expr *) lsecond(op->args), estate_ref, &rt);
+					lhs = compile_expr_datum((Expr *) linitial(op->args), estate_ref, &lt);
+					rhs = compile_expr_datum((Expr *) lsecond(op->args), estate_ref, &rt);
 					return emit_float_cmp(ctx, fid, lhs, rhs);
 				}
 
@@ -2532,10 +2440,8 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
 					{
 						llvm::Value *lhs, *rhs;
 
-						lhs = uplpgsql_compile_expr_bool(ctx,
-							(Expr *) linitial(op->args), estate_ref);
-						rhs = uplpgsql_compile_expr_bool(ctx,
-							(Expr *) lsecond(op->args), estate_ref);
+						lhs = compile_expr_bool((Expr *) linitial(op->args), estate_ref);
+						rhs = compile_expr_bool((Expr *) lsecond(op->args), estate_ref);
 						return builder->CreateICmp(int_pred, lhs, rhs, "boolcmp.result");
 					}
 
@@ -2544,10 +2450,8 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
 						ExprTypeClass lt, rt;
 						llvm::Value *lhs, *rhs;
 
-						lhs = uplpgsql_compile_expr_datum(ctx,
-							(Expr *) linitial(op->args), estate_ref, &lt);
-						rhs = uplpgsql_compile_expr_datum(ctx,
-							(Expr *) lsecond(op->args), estate_ref, &rt);
+						lhs = compile_expr_datum((Expr *) linitial(op->args), estate_ref, &lt);
+						rhs = compile_expr_datum((Expr *) lsecond(op->args), estate_ref, &rt);
 
 						/* Widen for cross-type comparisons */
 						if (is_cross_cmp)
@@ -2570,22 +2474,19 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
 		case T_BoolExpr:
 			{
 				BoolExpr   *b = (BoolExpr *) expr;
-				ListCell   *lc;
 
 				if (b->boolop == NOT_EXPR)
 				{
-					llvm::Value *arg = uplpgsql_compile_expr_bool(ctx,
-						(Expr *) linitial(b->args), estate_ref);
+					llvm::Value *arg = compile_expr_bool((Expr *) linitial(b->args), estate_ref);
 					return builder->CreateNot(arg, "not.result");
 				}
 				else if (b->boolop == AND_EXPR)
 				{
 					llvm::Value *result = llvm::ConstantInt::get(i1, 1, false);
 
-					foreach(lc, b->args)
+					for (auto *subexpr : cppgres::list<Expr *>(b->args))
 					{
-						llvm::Value *arg = uplpgsql_compile_expr_bool(ctx,
-							(Expr *) lfirst(lc), estate_ref);
+						llvm::Value *arg = compile_expr_bool(subexpr, estate_ref);
 						result = builder->CreateAnd(result, arg, "and.result");
 					}
 					return result;
@@ -2594,10 +2495,9 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
 				{
 					llvm::Value *result = llvm::ConstantInt::get(i1, 0, false);
 
-					foreach(lc, b->args)
+					for (auto *subexpr : cppgres::list<Expr *>(b->args))
 					{
-						llvm::Value *arg = uplpgsql_compile_expr_bool(ctx,
-							(Expr *) lfirst(lc), estate_ref);
+						llvm::Value *arg = compile_expr_bool(subexpr, estate_ref);
 						result = builder->CreateOr(result, arg, "or.result");
 					}
 					return result;
@@ -2644,7 +2544,7 @@ uplpgsql_compile_expr_bool(UPL_compile_ctx *ctx, Expr *expr,
  * coercion casts that don't change the Datum value).
  */
 static bool
-uplpgsql_can_fmgr_compile(Expr *expr)
+can_fmgr_compile(Expr *expr)
 {
 	if (expr == NULL)
 		return false;
@@ -2665,13 +2565,12 @@ uplpgsql_can_fmgr_compile(Expr *expr)
 			{
 				RelabelType *r = (RelabelType *) expr;
 
-				return uplpgsql_can_fmgr_compile(r->arg);
+				return can_fmgr_compile(r->arg);
 			}
 
 		case T_OpExpr:
 			{
 				OpExpr	   *op = (OpExpr *) expr;
-				ListCell   *lc;
 
 				if (op->opfuncid == InvalidOid)
 					return false;
@@ -2686,9 +2585,9 @@ uplpgsql_can_fmgr_compile(Expr *expr)
 				if (op->opfuncid >= FirstNormalObjectId)
 					return false;
 
-				foreach(lc, op->args)
+				for (auto *subexpr : cppgres::list<Expr *>(op->args))
 				{
-					if (!uplpgsql_can_fmgr_compile((Expr *) lfirst(lc)))
+					if (!can_fmgr_compile(subexpr))
 						return false;
 				}
 				return true;
@@ -2697,7 +2596,6 @@ uplpgsql_can_fmgr_compile(Expr *expr)
 		case T_FuncExpr:
 			{
 				FuncExpr   *f = (FuncExpr *) expr;
-				ListCell   *lc;
 
 				if (f->funcid == InvalidOid)
 					return false;
@@ -2706,9 +2604,9 @@ uplpgsql_can_fmgr_compile(Expr *expr)
 				if (f->funcid >= FirstNormalObjectId)
 					return false;
 
-				foreach(lc, f->args)
+				for (auto *subexpr : cppgres::list<Expr *>(f->args))
 				{
-					if (!uplpgsql_can_fmgr_compile((Expr *) lfirst(lc)))
+					if (!can_fmgr_compile(subexpr))
 						return false;
 				}
 				return true;
@@ -2717,11 +2615,10 @@ uplpgsql_can_fmgr_compile(Expr *expr)
 		case T_BoolExpr:
 			{
 				BoolExpr   *b = (BoolExpr *) expr;
-				ListCell   *lc;
 
-				foreach(lc, b->args)
+				for (auto *subexpr : cppgres::list<Expr *>(b->args))
 				{
-					if (!uplpgsql_can_fmgr_compile((Expr *) lfirst(lc)))
+					if (!can_fmgr_compile(subexpr))
 						return false;
 				}
 				return true;
@@ -2755,13 +2652,12 @@ fmgr_expr_allocates(Expr *expr)
 		case T_OpExpr:
 			{
 				OpExpr	   *op = (OpExpr *) expr;
-				ListCell   *lc;
 
 				if (OidIsValid(op->opresulttype) &&
 					!get_typbyval(op->opresulttype))
 					return true;
-				foreach(lc, op->args)
-					if (fmgr_expr_allocates((Expr *) lfirst(lc)))
+				for (auto *subexpr : cppgres::list<Expr *>(op->args))
+					if (fmgr_expr_allocates(subexpr))
 						return true;
 				return false;
 			}
@@ -2769,13 +2665,12 @@ fmgr_expr_allocates(Expr *expr)
 		case T_FuncExpr:
 			{
 				FuncExpr   *f = (FuncExpr *) expr;
-				ListCell   *lc;
 
 				if (OidIsValid(f->funcresulttype) &&
 					!get_typbyval(f->funcresulttype))
 					return true;
-				foreach(lc, f->args)
-					if (fmgr_expr_allocates((Expr *) lfirst(lc)))
+				for (auto *subexpr : cppgres::list<Expr *>(f->args))
+					if (fmgr_expr_allocates(subexpr))
 						return true;
 				return false;
 			}
@@ -2786,10 +2681,9 @@ fmgr_expr_allocates(Expr *expr)
 		case T_BoolExpr:
 			{
 				BoolExpr   *b = (BoolExpr *) expr;
-				ListCell   *lc;
 
-				foreach(lc, b->args)
-					if (fmgr_expr_allocates((Expr *) lfirst(lc)))
+				for (auto *subexpr : cppgres::list<Expr *>(b->args))
+					if (fmgr_expr_allocates(subexpr))
 						return true;
 				return false;
 			}
@@ -2805,7 +2699,7 @@ fmgr_expr_allocates(Expr *expr)
  *
  * A Param whose variable is a native array makes the compiled expression
  * marshal the flat contents back into the variable's Datum slot at the point
- * of use (see uplpgsql_emit_load_param_datum).  That marshal allocates the
+ * of use (see emit_load_param_datum).  That marshal allocates the
  * array in CurrentMemoryContext and stores the pointer in the variable, so
  * it must not run inside an allocation scope: the scope's reset would free
  * the value the variable now points at, and the next whole-datum use would
@@ -2813,8 +2707,8 @@ fmgr_expr_allocates(Expr *expr)
  * expressions — a leak is preferable to a dangling Datum, and a whole-datum
  * array read inside a bypass tree is rare to begin with.
  */
-static bool
-fmgr_expr_reads_native_array(UPL_compile_ctx *ctx, Expr *expr)
+bool
+function_compiler::fmgr_expr_reads_native_array(Expr *expr)
 {
 	if (expr == NULL)
 		return false;
@@ -2827,39 +2721,35 @@ fmgr_expr_reads_native_array(UPL_compile_ctx *ctx, Expr *expr)
 
 				if (p->paramkind != PARAM_EXTERN)
 					return false;
-				return find_native_array(ctx, p->paramid - 1) != NULL;
+				return find_native_array(p->paramid - 1) != NULL;
 			}
 
 		case T_RelabelType:
-			return fmgr_expr_reads_native_array(ctx,
-												((RelabelType *) expr)->arg);
+			return fmgr_expr_reads_native_array(((RelabelType *) expr)->arg);
 
 		case T_OpExpr:
 			{
-				ListCell   *lc;
 
-				foreach(lc, ((OpExpr *) expr)->args)
-					if (fmgr_expr_reads_native_array(ctx, (Expr *) lfirst(lc)))
+				for (auto *subexpr : cppgres::list<Expr *>(((OpExpr *) expr)->args))
+					if (fmgr_expr_reads_native_array(subexpr))
 						return true;
 				return false;
 			}
 
 		case T_FuncExpr:
 			{
-				ListCell   *lc;
 
-				foreach(lc, ((FuncExpr *) expr)->args)
-					if (fmgr_expr_reads_native_array(ctx, (Expr *) lfirst(lc)))
+				for (auto *subexpr : cppgres::list<Expr *>(((FuncExpr *) expr)->args))
+					if (fmgr_expr_reads_native_array(subexpr))
 						return true;
 				return false;
 			}
 
 		case T_BoolExpr:
 			{
-				ListCell   *lc;
 
-				foreach(lc, ((BoolExpr *) expr)->args)
-					if (fmgr_expr_reads_native_array(ctx, (Expr *) lfirst(lc)))
+				for (auto *subexpr : cppgres::list<Expr *>(((BoolExpr *) expr)->args))
+					if (fmgr_expr_reads_native_array(subexpr))
 						return true;
 				return false;
 			}
@@ -2875,20 +2765,19 @@ fmgr_expr_reads_native_array(UPL_compile_ctx *ctx, Expr *expr)
  * Yes when it allocates, unless it also reads a native array whole-datum,
  * whose marshalled Datum would land in the scope and be freed by its reset.
  */
-static bool
-fmgr_expr_wants_alloc_scope(UPL_compile_ctx *ctx, Expr *expr)
+bool
+function_compiler::fmgr_expr_wants_alloc_scope(Expr *expr)
 {
 	return fmgr_expr_allocates(expr) &&
-		!fmgr_expr_reads_native_array(ctx, expr);
+		!fmgr_expr_reads_native_array(expr);
 }
 
 /*
  * Emit IR to load a variable's Datum value for use as a function argument.
  * Returns the Datum as i64.
  */
-static llvm::Value *
-fmgr_load_arg_datum(UPL_compile_ctx *ctx, Expr *expr,
-					llvm::Value *estate_ref)
+llvm::Value *
+function_compiler::fmgr_load_arg_datum(Expr *expr, llvm::Value *estate_ref)
 {
 	llvm::Type *i64 = ctx->types[UPL_INT64];
 
@@ -2939,19 +2828,19 @@ fmgr_load_arg_datum(UPL_compile_ctx *ctx, Expr *expr,
 				Param *p = (Param *) expr;
 				int dno = p->paramid - 1;
 
-				return uplpgsql_emit_load_param_datum(ctx, estate_ref, dno);
+				return emit_load_param_datum(estate_ref, dno);
 			}
 
 		case T_RelabelType:
 			{
 				RelabelType *r = (RelabelType *) expr;
 
-				return fmgr_load_arg_datum(ctx, r->arg, estate_ref);
+				return fmgr_load_arg_datum(r->arg, estate_ref);
 			}
 
 		default:
 			/* For sub-expressions, recursively compile via fmgr */
-			return uplpgsql_compile_expr_fmgr(ctx, expr, estate_ref);
+			return compile_expr_fmgr(expr, estate_ref);
 	}
 }
 
@@ -2959,9 +2848,8 @@ fmgr_load_arg_datum(UPL_compile_ctx *ctx, Expr *expr,
  * Emit IR to check if a variable is NULL (for strict function handling).
  * Returns i1 (true if NULL).
  */
-static llvm::Value *
-fmgr_load_arg_isnull(UPL_compile_ctx *ctx, Expr *expr,
-					  llvm::Value *estate_ref)
+llvm::Value *
+function_compiler::fmgr_load_arg_isnull(Expr *expr, llvm::Value *estate_ref)
 {
 	llvm::Type *i1 = ctx->types[UPL_INT1];
 
@@ -2979,11 +2867,11 @@ fmgr_load_arg_isnull(UPL_compile_ctx *ctx, Expr *expr,
 				Param *p = (Param *) expr;
 				int dno = p->paramid - 1;
 
-				return uplpgsql_emit_load_param_isnull(ctx, estate_ref, dno);
+				return emit_load_param_isnull(estate_ref, dno);
 			}
 
 		case T_RelabelType:
-			return fmgr_load_arg_isnull(ctx, ((RelabelType *) expr)->arg,
+			return fmgr_load_arg_isnull(((RelabelType *) expr)->arg,
 										estate_ref);
 
 		default:
@@ -3001,21 +2889,20 @@ fmgr_load_arg_isnull(UPL_compile_ctx *ctx, Expr *expr,
  *
  * Returns the result as Datum (i64).
  */
-static llvm::Value *
-uplpgsql_compile_expr_fmgr(UPL_compile_ctx *ctx, Expr *expr,
-						    llvm::Value *estate_ref)
+llvm::Value *
+function_compiler::compile_expr_fmgr(Expr *expr, llvm::Value *estate_ref)
 {
-	return uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref, NULL);
+	return compile_expr_fmgr_full(expr, estate_ref, NULL);
 }
 
 /*
  * Full variant that also returns the result's isnull flag (i1).
  * If isnull_out is NULL, isnull tracking is skipped (pass-by-value path).
  */
-static llvm::Value *
-uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
-								llvm::Value *estate_ref,
-								llvm::Value **isnull_out)
+llvm::Value *
+function_compiler::compile_expr_fmgr_full(Expr *expr,
+										  llvm::Value *estate_ref,
+										  llvm::Value **isnull_out)
 {
 	llvm::IRBuilder<> *builder = ctx->builder.get();
 	llvm::Type		*i8 = ctx->types[UPL_INT8];
@@ -3036,19 +2923,18 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 
 				if (isnull_out && c->constisnull)
 					*isnull_out = llvm::ConstantInt::get(i1, 1, false);
-				return fmgr_load_arg_datum(ctx, expr, estate_ref);
+				return fmgr_load_arg_datum(expr, estate_ref);
 			}
 
 		case T_Param:
 			{
 				if (isnull_out)
-					*isnull_out = fmgr_load_arg_isnull(ctx, expr, estate_ref);
-				return fmgr_load_arg_datum(ctx, expr, estate_ref);
+					*isnull_out = fmgr_load_arg_isnull(expr, estate_ref);
+				return fmgr_load_arg_datum(expr, estate_ref);
 			}
 
 		case T_RelabelType:
-			return uplpgsql_compile_expr_fmgr_full(ctx,
-				((RelabelType *) expr)->arg, estate_ref, isnull_out);
+			return compile_expr_fmgr_full(((RelabelType *) expr)->arg, estate_ref, isnull_out);
 
 		case T_BoolExpr:
 			{
@@ -3070,14 +2956,12 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 				 * "false wins" for AND and lets a true input win for OR).
 				 */
 				BoolExpr   *b = (BoolExpr *) expr;
-				ListCell   *lc;
 
 				if (b->boolop == NOT_EXPR)
 				{
 					llvm::Value *arg, *arg_isnull = NULL, *b1, *notv;
 
-					arg = uplpgsql_compile_expr_fmgr_full(ctx,
-						(Expr *) linitial(b->args), estate_ref, &arg_isnull);
+					arg = compile_expr_fmgr_full((Expr *) linitial(b->args), estate_ref, &arg_isnull);
 					if (arg == NULL)
 						return NULL;
 					/* NOT NULL is NULL: nullness passes straight through */
@@ -3094,12 +2978,11 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 					llvm::Value	*any_null = llvm::ConstantInt::get(i1, 0, false);
 					llvm::Value	*decided = llvm::ConstantInt::get(i1, 0, false);
 
-					foreach(lc, b->args)
+					for (auto *subexpr : cppgres::list<Expr *>(b->args))
 					{
 						llvm::Value *arg, *arg_isnull = NULL, *b1, *known;
 
-						arg = uplpgsql_compile_expr_fmgr_full(ctx,
-							(Expr *) lfirst(lc), estate_ref, &arg_isnull);
+						arg = compile_expr_fmgr_full(subexpr, estate_ref, &arg_isnull);
 						if (arg == NULL)
 							return NULL;
 
@@ -3148,7 +3031,6 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 				llvm::Value *fn_ptr_val;
 				llvm::Value *call_result;
 				llvm::FunctionType *fn_type;
-				ListCell   *lc;
 				int			argidx;
 				llvm::Value **arg_isnulls;
 
@@ -3357,9 +3239,8 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 				arg_isnulls = (llvm::Value **)
 					palloc(sizeof(llvm::Value *) * (nargs > 0 ? nargs : 1));
 				argidx = 0;
-				foreach(lc, args)
+				for (auto *arg_expr : cppgres::list<Expr *>(args))
 				{
-					Expr	   *arg_expr = (Expr *) lfirst(lc);
 					llvm::Value *arg_datum;
 					llvm::Value *arg_isnull;
 					uint64		arg_off;
@@ -3382,7 +3263,7 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 					 * them again; recomputing would compile every argument a
 					 * second time.
 					 */
-					arg_datum = uplpgsql_compile_expr_fmgr_full(ctx, arg_expr,
+					arg_datum = compile_expr_fmgr_full(arg_expr,
 																estate_ref,
 																&arg_isnull);
 
@@ -3561,7 +3442,9 @@ uplpgsql_compile_expr_fmgr_full(UPL_compile_ctx *ctx, Expr *expr,
 
 
 /* ================================================================
- * Public API — called from uplpgsql_compile.c
+ * Three-tier entry points — called from the statement compiler
+ * (upl_compile_stmts.cpp) and, via the cb_try_compile_bool trampoline,
+ * from the core engine
  * ================================================================
  */
 
@@ -3662,8 +3545,7 @@ oid_to_type_class(Oid typoid)
  * Returns true if inlined, false → caller uses runtime helper.
  */
 bool
-uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
-							UPLpgSQL_stmt_assign *stmt)
+function_compiler::try_compile_assign(UPLpgSQL_stmt_assign *stmt)
 {
 	Expr		   *expr;
 	ExprTypeClass	target_class, expr_class;
@@ -3672,7 +3554,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 	UPLpgSQL_var   *target_var;
 
 	/* Only inline assignments to scalar variables */
-	target_datum = ctx_func(ctx)->datums[stmt->varno];
+	target_datum = func_->datums[stmt->varno];
 	if (target_datum->dtype != UPLPGSQL_DTYPE_VAR)
 		return false;
 
@@ -3681,14 +3563,14 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 		return false;
 
 	/* Get the parsed expression tree */
-	expr = uplpgsql_prepare_and_get_expr(ctx, stmt->expr);
+	expr = prepare_and_get_expr(stmt->expr);
 	if (expr == NULL)
 		return false;
 
 	target_class = oid_to_type_class(target_var->datatype->typoid);
 
 	/* Tier 1: try native LLVM instructions */
-	expr_class = uplpgsql_classify_expr(expr);
+	expr_class = classify_expr(expr);
 	if (expr_class != EXPR_TYPE_UNKNOWN && expr_class == target_class)
 	{
 		llvm::Value	*any_null;
@@ -3699,15 +3581,15 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			 stmt->varno, stmt->expr->query);
 
 		estate_ref = ctx->function->getArg(0);
-		any_null = tier1_expr_any_null(ctx, expr, estate_ref);
+		any_null = tier1_expr_any_null(expr, estate_ref);
 
 		if (any_null == NULL)
 		{
 			/* Nothing nullable in it — compute unconditionally. */
-			result = uplpgsql_compile_expr_datum(ctx, expr, estate_ref,
+			result = compile_expr_datum(expr, estate_ref,
 												 &expr_class);
 			datum_val = native_to_datum(ctx, result, expr_class);
-			uplpgsql_emit_store_var_datum(ctx, estate_ref, stmt->varno,
+			emit_store_var_datum(estate_ref, stmt->varno,
 										  datum_val);
 			return true;
 		}
@@ -3729,15 +3611,15 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			ctx->builder->CreateCondBr(any_null, null_bb, compute_bb);
 
 			ctx->builder->SetInsertPoint(compute_bb);
-			result = uplpgsql_compile_expr_datum(ctx, expr, estate_ref,
+			result = compile_expr_datum(expr, estate_ref,
 												 &expr_class);
 			datum_val = native_to_datum(ctx, result, expr_class);
-			uplpgsql_emit_store_var_datum(ctx, estate_ref, stmt->varno,
+			emit_store_var_datum(estate_ref, stmt->varno,
 										  datum_val);
 			ctx->builder->CreateBr(merge_bb);
 
 			ctx->builder->SetInsertPoint(null_bb);
-			uplpgsql_emit_store_var_null(ctx, estate_ref, stmt->varno);
+			emit_store_var_null(estate_ref, stmt->varno);
 			ctx->builder->CreateBr(merge_bb);
 
 			ctx->builder->SetInsertPoint(merge_bb);
@@ -3753,14 +3635,14 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 	 * RT_ASSIGN_VAR_DATUM runtime helper which calls assign_simple_var()
 	 * to handle freeval cleanup of old values.
 	 */
-	if (uplpgsql_can_fmgr_compile(expr))
+	if (can_fmgr_compile(expr))
 	{
 		estate_ref = ctx->function->getArg(0);
 
 		if (target_var->datatype->typbyval)
 		{
 			llvm::Value	*isnull_val;
-			bool			scoped = fmgr_expr_wants_alloc_scope(ctx, expr);
+			bool			scoped = fmgr_expr_wants_alloc_scope(expr);
 			llvm::Value	*old = NULL;
 
 			/*
@@ -3783,13 +3665,13 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			 * own accord.  Storing with isnull hardwired to false turned
 			 * those into 0/false.
 			 */
-			datum_val = uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref,
+			datum_val = compile_expr_fmgr_full(expr, estate_ref,
 														&isnull_val);
 			if (datum_val != NULL)
 			{
 				elog(DEBUG1, "uplpgsql: fmgr bypass assignment to dno %d: %s",
 					 stmt->varno, stmt->expr->query);
-				uplpgsql_emit_store_var_datum_isnull(ctx, estate_ref,
+				emit_store_var_datum_isnull(estate_ref,
 													 stmt->varno, datum_val,
 													 isnull_val);
 				if (scoped)
@@ -3827,7 +3709,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			 * own slot, and resetting the scope would free that live value.
 			 */
 			llvm::Value	*isnull_val;
-			bool			scoped = fmgr_expr_wants_alloc_scope(ctx, expr);
+			bool			scoped = fmgr_expr_wants_alloc_scope(expr);
 			llvm::Value	*old = NULL;
 
 			if (scoped)
@@ -3837,7 +3719,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 				old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 			}
 
-			datum_val = uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref,
+			datum_val = compile_expr_fmgr_full(expr, estate_ref,
 														&isnull_val);
 			if (datum_val != NULL)
 			{
@@ -3875,12 +3757,12 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 				{
 					UPLpgSQL_native_array *target_na;
 
-					target_na = find_native_array(ctx, stmt->varno);
+					target_na = find_native_array(stmt->varno);
 					if (target_na != NULL)
 					{
 						elog(DEBUG1, "uplpgsql: native array from_datum dno %d "
 							 "(fmgr bypass assign)", target_na->dno);
-						uplpgsql_emit_refresh_native_array(ctx, target_na);
+						emit_refresh_native_array(target_na);
 					}
 				}
 				return true;
@@ -3915,7 +3797,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 	 * standard array path (Tier 3 or array subscript helpers).
 	 */
 	{
-		UPLpgSQL_native_array *na = find_native_array(ctx, stmt->varno);
+		UPLpgSQL_native_array *na = find_native_array(stmt->varno);
 
 		if (na != NULL && !IsA(expr, SubscriptingRef))
 		{
@@ -4019,7 +3901,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			}
 
 			/* Compile the size expression to i32 */
-			size_class = uplpgsql_classify_expr(size_arg);
+			size_class = classify_expr(size_arg);
 			if (size_class != EXPR_TYPE_INT4)
 			{
 				/*
@@ -4033,7 +3915,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 					if (p->paramkind == PARAM_EXTERN)
 					{
 						size_class = EXPR_TYPE_INT4;
-						n_val = uplpgsql_compile_expr_datum(ctx, size_arg,
+						n_val = compile_expr_datum(size_arg,
 														   estate_ref,
 														   &size_class);
 					}
@@ -4045,12 +3927,12 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			}
 			else
 			{
-				n_val = uplpgsql_compile_expr_datum(ctx, size_arg,
+				n_val = compile_expr_datum(size_arg,
 												   estate_ref, &size_class);
 			}
 
 			/* Compile the fill value */
-			fill_class = uplpgsql_classify_expr(fill_arg);
+			fill_class = classify_expr(fill_arg);
 			if (fill_class != EXPR_TYPE_INT4 &&
 				fill_class != EXPR_TYPE_INT8 &&
 				fill_class != EXPR_TYPE_FLOAT8)
@@ -4069,7 +3951,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 							fill_class = EXPR_TYPE_INT8;
 						else
 							fill_class = EXPR_TYPE_FLOAT8;
-						fill_val = uplpgsql_compile_expr_datum(ctx, fill_arg,
+						fill_val = compile_expr_datum(fill_arg,
 															  estate_ref,
 															  &fill_class);
 					}
@@ -4081,7 +3963,7 @@ uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
 			}
 			else
 			{
-				fill_val = uplpgsql_compile_expr_datum(ctx, fill_arg,
+				fill_val = compile_expr_datum(fill_arg,
 													  estate_ref,
 													  &fill_class);
 			}
@@ -4256,12 +4138,12 @@ not_native_init:
 			Expr	   *idx_expr = (Expr *) linitial(sbsref->refupperindexpr);
 			ExprTypeClass idx_class;
 
-			idx_class = uplpgsql_classify_expr(idx_expr);
+			idx_class = classify_expr(idx_expr);
 			if (idx_class == EXPR_TYPE_INT4 &&
 				array_param->paramkind == PARAM_EXTERN)
 			{
 				int array_dno = array_param->paramid - 1;
-				UPLpgSQL_native_array *na = find_native_array(ctx, array_dno);
+				UPLpgSQL_native_array *na = find_native_array(array_dno);
 
 				estate_ref = ctx->function->getArg(0);
 
@@ -4292,16 +4174,16 @@ not_native_init:
 					llvm::BasicBlock *slow_bb, *done_bb;
 					llvm::Type		*i32_ty = ctx->types[UPL_INT32];
 
-					val_class = uplpgsql_classify_expr(val_expr);
+					val_class = classify_expr(val_expr);
 
 					if (val_class != EXPR_TYPE_UNKNOWN)
 					{
 						elog(DEBUG1, "uplpgsql: native array set dno %d[idx]: %s",
 							 array_dno, stmt->expr->query);
 
-						emit_set_subscript_null_check(ctx, idx_expr,
+						emit_set_subscript_null_check(idx_expr,
 													  estate_ref);
-						idx_val = uplpgsql_compile_expr_datum(ctx, idx_expr,
+						idx_val = compile_expr_datum(idx_expr,
 															  estate_ref,
 															  &idx_class);
 
@@ -4313,12 +4195,12 @@ not_native_init:
 						 * stores a NULL element.  See
 						 * tier1_compile_value_guarded.
 						 */
-						val_result = tier1_compile_value_guarded(ctx, val_expr,
+						val_result = tier1_compile_value_guarded(val_expr,
 																 estate_ref,
 																 &val_class,
 																 &val_isnull);
 					}
-					else if (uplpgsql_can_fmgr_compile(val_expr))
+					else if (can_fmgr_compile(val_expr))
 					{
 						/*
 						 * Tier 2 value.  Tier 1 covers float8 arithmetic and
@@ -4343,9 +4225,9 @@ not_native_init:
 							 "(fmgr bypass value): %s",
 							 array_dno, stmt->expr->query);
 
-						emit_set_subscript_null_check(ctx, idx_expr,
+						emit_set_subscript_null_check(idx_expr,
 													  estate_ref);
-						idx_val = uplpgsql_compile_expr_datum(ctx, idx_expr,
+						idx_val = compile_expr_datum(idx_expr,
 															  estate_ref,
 															  &idx_class);
 
@@ -4362,7 +4244,7 @@ not_native_init:
 						 * both the flat store and the array_set_element slow
 						 * path below run safely outside it.
 						 */
-						scoped = fmgr_expr_wants_alloc_scope(ctx, val_expr);
+						scoped = fmgr_expr_wants_alloc_scope(val_expr);
 						if (scoped)
 						{
 							llvm::Value *a[] = { estate_ref };
@@ -4370,8 +4252,7 @@ not_native_init:
 							scope_old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 						}
 
-						val_result = uplpgsql_compile_expr_fmgr_full(ctx,
-																	 val_expr,
+						val_result = compile_expr_fmgr_full(val_expr,
 																	 estate_ref,
 																	 &val_isnull);
 						if (val_result == NULL)
@@ -4615,13 +4496,13 @@ not_native_init:
 
 					/* Out of range, or not 1-D: let PostgreSQL do it. */
 					ctx->builder->SetInsertPoint(slow_bb);
-					uplpgsql_emit_sync_native_array(ctx, na);
+					emit_sync_native_array(na);
 					{
 						ArrayTypeInfo	ati;
 						llvm::Value	*datum_val;
 
 						datum_val = native_to_datum(ctx, val_result, val_class);
-						resolve_array_type_info(ctx, array_dno, &ati);
+						resolve_array_type_info(array_dno, &ati);
 
 						{
 							llvm::Value *args[] = {
@@ -4641,7 +4522,7 @@ not_native_init:
 							ctx->builder->CreateCall(ctx->rt_funcs[RT_ARRAY_SET_ELEMENT], args, "");
 						}
 					}
-					uplpgsql_emit_refresh_native_array(ctx, na);
+					emit_refresh_native_array(na);
 					ctx->builder->CreateBr(done_bb);
 
 					ctx->builder->SetInsertPoint(done_bb);
@@ -4685,7 +4566,7 @@ not_native_init:
 					{
 						llvm::Value *idx_isnull;
 
-						idx_isnull = tier1_expr_any_null(ctx, idx_expr,
+						idx_isnull = tier1_expr_any_null(idx_expr,
 														 estate_ref);
 						if (idx_isnull != NULL)
 						{
@@ -4697,7 +4578,7 @@ not_native_init:
 						}
 					}
 
-					idx_val = uplpgsql_compile_expr_datum(ctx, idx_expr,
+					idx_val = compile_expr_datum(idx_expr,
 														  estate_ref,
 														  &idx_class);
 
@@ -4732,7 +4613,7 @@ not_native_init:
 						ctx->builder->CreateCondBr(oob, null_bb, val_bb);
 
 						ctx->builder->SetInsertPoint(null_bb);
-						uplpgsql_emit_store_var_null(ctx, estate_ref,
+						emit_store_var_null(estate_ref,
 													 stmt->varno);
 						ctx->builder->CreateBr(get_done_bb);
 
@@ -4755,7 +4636,7 @@ not_native_init:
 						else /* INT8OID */
 							datum_val = elem;
 
-						uplpgsql_emit_store_var_datum(ctx, estate_ref,
+						emit_store_var_datum(estate_ref,
 													  stmt->varno, datum_val);
 					}
 					ctx->builder->CreateBr(get_done_bb);
@@ -4788,7 +4669,7 @@ standard_array_path:
 					{
 						llvm::Value *idx_isnull;
 
-						idx_isnull = tier1_expr_any_null(ctx, idx_expr,
+						idx_isnull = tier1_expr_any_null(idx_expr,
 														 estate_ref);
 						if (idx_isnull != NULL)
 						{
@@ -4801,7 +4682,7 @@ standard_array_path:
 							ctx->builder->CreateCondBr(idx_isnull, null_bb, idxok_bb);
 
 							ctx->builder->SetInsertPoint(null_bb);
-							uplpgsql_emit_store_var_null(ctx, estate_ref,
+							emit_store_var_null(estate_ref,
 														 stmt->varno);
 							ctx->builder->CreateBr(done_bb);
 
@@ -4809,7 +4690,7 @@ standard_array_path:
 						}
 					}
 
-					idx_val = uplpgsql_compile_expr_datum(ctx, idx_expr,
+					idx_val = compile_expr_datum(idx_expr,
 														  estate_ref,
 														  &idx_class);
 
@@ -4825,7 +4706,7 @@ standard_array_path:
 					{
 						ArrayTypeInfo ati;
 
-						resolve_array_type_info(ctx, array_dno, &ati);
+						resolve_array_type_info(array_dno, &ati);
 						{
 							llvm::Value *args[] = {
 								estate_ref,
@@ -4850,7 +4731,7 @@ standard_array_path:
 					elem_isnull = ctx->builder->CreateLoad(
 						ctx->types[UPL_INT1], isnull_ptr,
 						"arr_elem_isnull");
-					uplpgsql_emit_store_var_datum_isnull(ctx, estate_ref,
+					emit_store_var_datum_isnull(estate_ref,
 														 stmt->varno,
 														 elem_datum,
 														 elem_isnull);
@@ -4873,7 +4754,7 @@ standard_array_path:
 					Expr	   *val_expr = sbsref->refassgnexpr;
 					ExprTypeClass val_class;
 
-					val_class = uplpgsql_classify_expr(val_expr);
+					val_class = classify_expr(val_expr);
 					if (val_class != EXPR_TYPE_UNKNOWN)
 					{
 						llvm::Value *idx_val, *val_result, *val_datum;
@@ -4882,9 +4763,9 @@ standard_array_path:
 						elog(DEBUG1, "uplpgsql: array set dno %d[idx] := val: %s",
 							 array_dno, stmt->expr->query);
 
-						emit_set_subscript_null_check(ctx, idx_expr,
+						emit_set_subscript_null_check(idx_expr,
 													  estate_ref);
-						idx_val = uplpgsql_compile_expr_datum(ctx, idx_expr,
+						idx_val = compile_expr_datum(idx_expr,
 															  estate_ref,
 															  &idx_class);
 
@@ -4894,7 +4775,7 @@ standard_array_path:
 						 * Hardwiring isnull to false here stored 0 where
 						 * PostgreSQL stores a NULL.
 						 */
-						val_result = tier1_compile_value_guarded(ctx, val_expr,
+						val_result = tier1_compile_value_guarded(val_expr,
 																 estate_ref,
 																 &val_class,
 																 &val_isnull);
@@ -4905,7 +4786,7 @@ standard_array_path:
 						{
 							ArrayTypeInfo ati;
 
-							resolve_array_type_info(ctx, array_dno, &ati);
+							resolve_array_type_info(array_dno, &ati);
 							{
 								llvm::Value *args[] = {
 									estate_ref,
@@ -4931,7 +4812,7 @@ standard_array_path:
 
 	/*
 	 * Could not inline this expression.  The caller
-	 * (uplpgsql_compile_assign) clears the plan we created at compile time
+	 * (compile_assign) clears the plan we created at compile time
 	 * so that the runtime path (exec_assign_expr) can re-prepare it with
 	 * exec_simple_check_plan, enabling the fast "simple expression"
 	 * evaluation path.  It cannot be cleared here: the caller first decides
@@ -4950,9 +4831,8 @@ standard_array_path:
  * Returns true if inlined (result in *result_out), false → use runtime helper.
  */
 bool
-uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
-						  UPLpgSQL_expr *expr_node,
-						  llvm::Value **result_out)
+function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
+									llvm::Value **result_out)
 {
 	Expr		   *expr;
 	ExprTypeClass	tc;
@@ -4968,12 +4848,12 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 	if (ctx->defer_cond_plan)
 		return false;
 
-	expr = uplpgsql_prepare_and_get_expr(ctx, expr_node);
+	expr = prepare_and_get_expr(expr_node);
 	if (expr == NULL)
 		return false;
 
 	/* Tier 1: native LLVM comparisons */
-	tc = uplpgsql_classify_expr(expr);
+	tc = classify_expr(expr);
 	if (tc == EXPR_TYPE_BOOL)
 	{
 		llvm::Value	*any_null, *val;
@@ -4981,11 +4861,11 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 		elog(DEBUG1, "uplpgsql: inlining bool expression: %s", expr_node->query);
 
 		estate_ref = ctx->function->getArg(0);
-		any_null = tier1_expr_any_null(ctx, expr, estate_ref);
+		any_null = tier1_expr_any_null(expr, estate_ref);
 
 		if (any_null == NULL)
 		{
-			*result_out = uplpgsql_compile_expr_bool(ctx, expr, estate_ref);
+			*result_out = compile_expr_bool(expr, estate_ref);
 			return true;
 		}
 
@@ -5008,7 +4888,7 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 			ctx->builder->CreateCondBr(any_null, null_bb, compute_bb);
 
 			ctx->builder->SetInsertPoint(compute_bb);
-			val = uplpgsql_compile_expr_bool(ctx, expr, estate_ref);
+			val = compile_expr_bool(expr, estate_ref);
 			/* the comparison may have added blocks; branch from the current one */
 			from_bb = ctx->builder->GetInsertBlock();
 			ctx->builder->CreateBr(merge_bb);
@@ -5031,11 +4911,11 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 	}
 
 	/* Tier 2: fmgr bypass — result is Datum, truncate to i1 */
-	if (uplpgsql_can_fmgr_compile(expr))
+	if (can_fmgr_compile(expr))
 	{
 		llvm::Value	*datum_result;
 		llvm::Value	*isnull_val = NULL;
-		bool			scoped = fmgr_expr_wants_alloc_scope(ctx, expr);
+		bool			scoped = fmgr_expr_wants_alloc_scope(expr);
 		llvm::Value	*old = NULL;
 
 		elog(DEBUG1, "uplpgsql: fmgr bypass bool expression: %s",
@@ -5057,7 +4937,7 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 			old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 		}
 
-		datum_result = uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref,
+		datum_result = compile_expr_fmgr_full(expr, estate_ref,
 													   &isnull_val);
 		if (datum_result != NULL)
 		{
@@ -5095,11 +4975,11 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 	/*
 	 * Could not inline — clear the compile-time plan so the runtime path
 	 * can re-prepare with exec_simple_check_plan (see comment in
-	 * uplpgsql_try_compile_assign for details).
+	 * try_compile_assign for details).
 	 */
 	if (expr_node->plan != NULL)
 	{
-		SPI_freeplan(expr_node->plan);
+		cppgres::ffi_guard{::SPI_freeplan}(expr_node->plan);
 		expr_node->plan = NULL;
 	}
 
@@ -5112,10 +4992,11 @@ uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
 	{
 		int		na_i;
 
-		for (na_i = 0; na_i < ctx_num_native_arrays(ctx); na_i++)
-			uplpgsql_emit_sync_native_array(ctx,
-											&ctx_native_arrays(ctx)[na_i]);
+		for (na_i = 0; na_i < num_native_arrays_; na_i++)
+			emit_sync_native_array(&native_arrays_[na_i]);
 	}
 
 	return false;
 }
+
+} /* namespace uplpgsql */

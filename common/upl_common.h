@@ -12,8 +12,9 @@
  *		  - UPLpgSQL_func: cached compiled function (wraps UPL_func)
  *		  - UPLpgSQL_exception_frame: heap-allocated frame for sigsetjmp-based
  *		    exception handling in JIT'd code
- *		  - UPLpgSQL_lang_data: PL/pgSQL-specific per-compilation state
- *		    stored in UPL_compile_ctx.lang_data
+ *
+ *		Compiler-internal types (native array metadata, expression type
+ *		classes) live with the compiler class in upl_compiler.hpp.
  *
  *		Key enums:
  *		  - UPLpgSQL_rt_func: indices into the runtime function declaration array
@@ -68,13 +69,6 @@ extern "C" {
  *   UPLPGSQL_RC_OK=0, RC_EXIT=1, RC_RETURN=2, RC_CONTINUE=3
  * We use the enum values directly — no separate defines needed.
  */
-
-/*
- * Max bytes per native array to allocate on stack via LLVM alloca.
- * Arrays larger than this threshold use palloc0 (heap) via runtime helper.
- * 4096 bytes = 512 float8s or 1024 int4s — fits comfortably in stack frame.
- */
-#define NATIVE_ARRAY_STACK_THRESHOLD	4096
 
 /*
  * Runtime function indices — used to index into ctx->rt_funcs[] and
@@ -220,83 +214,6 @@ typedef struct UPLpgSQL_func
 	ItemPointerData		fn_tid;
 } UPLpgSQL_func;
 
-/*
- * PL/pgSQL-specific per-compilation data, stored in UPL_compile_ctx.lang_data.
- *
- * This struct holds the PL/pgSQL function being compiled, the cached
- * plstate pointer, and native array optimization data.
- */
-typedef struct UPLpgSQL_lang_data
-{
-	/* The PL/pgSQL function being compiled */
-	UPLpgSQL_function   *uplpgsql_func;
-
-	/* Cached plstate pointer (estate->uplpgsql_estate), loaded at entry */
-	llvm::Value *		plstate_ref;
-
-	/* Native local arrays identified by escape analysis (Phase 7) */
-	int					num_native_arrays;
-	struct UPLpgSQL_native_array *native_arrays;
-} UPLpgSQL_lang_data;
-
-/*
- * Metadata for a local array variable lowered to flat native memory
- * by Phase 7 escape analysis.
- *
- * Instead of going through array_get_element/array_set_element per access
- * (~50-100ns each), subscript reads/writes are compiled as direct LLVM
- * GEP+load/store (~1ns).
- *
- * Created by uplpgsql_analyze_native_arrays() in uplpgsql_compile.c.
- * The llvm_elemtype, data_ptr, and len_ptr fields are populated during
- * step 7b of uplpgsql_compile_function() (entry block alloca setup).
- * The actual memory allocation happens when array_fill() is intercepted
- * during expression compilation (uplpgsql_expr.c).
- */
-typedef struct UPLpgSQL_native_array
-{
-	int				dno;			/* datum number of the array variable */
-	Oid				elemtype;		/* INT4OID, INT8OID, or FLOAT8OID */
-	int				elem_size;		/* sizeof(element): 4 or 8 bytes */
-	llvm::Type *		llvm_elemtype;	/* i32, i64, or double */
-	llvm::Value *	data_ptr;		/* entry-block alloca holding ptr to flat memory */
-	llvm::Value *	len_ptr;		/* entry-block alloca: element count, or -1 when
-									 * the value is not a 1-D array and so cannot be
-									 * held natively (see uplpgsql_rt_native_array_
-									 * from_datum) */
-	llvm::Value *	nulls_ptr;		/* entry-block alloca: ptr to a per-element
-									 * bool array, or NULL when no element is
-									 * NULL.  PostgreSQL fills the gap with NULLs
-									 * when an assignment extends an array past
-									 * its end, so the native form has to be able
-									 * to say which elements are null. */
-	llvm::Value *	lb_ptr;			/* entry-block alloca: the array's lower bound.
-									 * PostgreSQL arrays need not start at 1
-									 * ('[2:3]={9,10}'), so subscripts are relative
-									 * to this, not to 1. */
-	llvm::Value *	cap_ptr;		/* entry-block alloca: allocated element slots
-									 * in data.  An append (a write at exactly
-									 * lb+len) bumps len up to this without any
-									 * reallocation; past it the buffers grow
-									 * through uplpgsql_rt_native_array_reserve,
-									 * which doubles, so filling an array element
-									 * by element is amortized O(1) per write. */
-	llvm::Value *	is_heap_ptr;	/* entry-block alloca (i8): 1 when data was
-									 * palloc'd and may be repalloc'd/pfree'd, 0
-									 * for the array_fill stack buffer, which can
-									 * only be copied out of. */
-} UPLpgSQL_native_array;
-
-/*
- * The compile context is now UPL_compile_ctx from core.
- * Driver code uses it directly with PL/pgSQL-specific data in lang_data.
- *
- */
-/*
- * Helper macros to access PL/pgSQL-specific lang_data from a UPL_compile_ctx.
- */
-#define UPLPGSQL_LANG_DATA(ctx) ((UPLpgSQL_lang_data *)(ctx)->lang_data)
-
 /* --- uplpgsql_handler.c GUCs --- */
 extern bool uplpgsql_enable_jit_heuristic;
 extern bool uplpgsql_dump_ir;
@@ -401,20 +318,6 @@ extern HeapTuple uplpgsql_exec_trigger_jit(UPLpgSQL_function *func,
 										   TriggerData *trigdata,
 										   uplpgsql_jit_func jit_func);
 
-/*
- * --- uplpgsql_expr.c (expression inlining) ---
- *
- * These are called from uplpgsql_compile.c to attempt expression-level
- * optimization.  They return true if the expression was successfully
- * inlined (Tier 1 or Tier 2), false if the caller should fall back to
- * the runtime helper (Tier 3).
- */
-extern bool uplpgsql_try_compile_assign(UPL_compile_ctx *ctx,
-										UPLpgSQL_stmt_assign *stmt);
-extern bool uplpgsql_try_compile_bool(UPL_compile_ctx *ctx,
-									  UPLpgSQL_expr *expr,
-									  llvm::Value * *result_out);
-
 /* Runtime helpers for pass-by-reference variable assignment */
 extern void uplpgsql_rt_assign_var_datum(UPLpgSQL_exec_state *estate,
 										 int dno, Datum value, bool isnull);
@@ -435,20 +338,6 @@ extern Datum uplpgsql_rt_get_recfield(UPLpgSQL_exec_state *estate,
 extern Datum uplpgsql_rt_get_recfield_fast(UPLpgSQL_exec_state *estate,
 										   int rec_dno, int fnumber,
 										   bool *isnull_out);
-
-/*
- * Native array <-> PG Datum marshalling, emitted at escape points.
- *
- * A native array's live contents are in flat memory (data_ptr/len_ptr); the
- * variable's PG Datum is stale between escapes.  Emit sync before handing the
- * variable to anything that reads it as a Datum, and refresh after anything
- * that writes it as a Datum.  Defined in upl_compile_stmts.c; also called
- * from upl_compile_expr.c.
- */
-extern void uplpgsql_emit_sync_native_array(UPL_compile_ctx *ctx,
-											struct UPLpgSQL_native_array *na);
-extern void uplpgsql_emit_refresh_native_array(UPL_compile_ctx *ctx,
-											   struct UPLpgSQL_native_array *na);
 
 /* Runtime helpers for array element access from inlined expressions */
 extern Datum uplpgsql_rt_array_get_element(UPLpgSQL_exec_state *estate,
