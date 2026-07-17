@@ -33,13 +33,19 @@ and from the LLVM C API to the LLVM C++ API.
    - Grammar/scanner stay flex/bison with C skeletons, compiled as C++;
      actions are C++-clean.
 
-   Error-handling boundaries (implemented in the handler): code that
-   recovers from errors itself (the JIT-compile fallback) converts longjmp
-   to exceptions via `cppgres::ffi_guard` and uses RAII; execution paths
-   whose errors belong to the client stay Postgres-native (`PG_TRY`/
-   `PG_FINALLY`) to preserve error fidelity.  The compile pipeline keeps a
-   `PG_TRY` that resets the context's LLVM `unique_ptr`s on longjmp before
-   re-throwing.
+   Error handling (phase 2): exception-based throughout.  Calls into the
+   engine run under `cppgres::ffi_guard`; entry points convert back at
+   their boundary with `pg_exception::rethrow()` (full fidelity) or
+   `cppgres::report`.  Cleanup is RAII — including error-path-only cleanup
+   (scope-fail guards via `std::uncaught_exceptions`), never try/catch.
+   Runtime helpers called from JIT'd code are exception barriers: a C++
+   exception must never unwind into a JIT frame.
+
+   API shape: no bare multi-positional engine calls with casted nulls at
+   call sites.  Call-scoped state and dispatch live in classes
+   (`uplpgsql::call`, `uplpgsql::do_block`, the compiler class), and the
+   entry points reduce to constructing them inside an SPI session and
+   calling `execute()`.
 
 ## Invariants (do not break)
 

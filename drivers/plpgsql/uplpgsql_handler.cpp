@@ -675,6 +675,144 @@ jit_lookup_or_compile(UPLpgSQL_function *func)
 	}
 }
 
+/*
+ * One PL/pgSQL call.
+ *
+ * Compiles the function (getting the AST via the forked parser), owns the
+ * call-scoped bookkeeping (busy marking, the procedure-lifespan resource
+ * owner), and dispatches to the right execution engine: trigger, event
+ * trigger or regular function; JIT'd native code or the interpreter.
+ */
+class call
+{
+public:
+	/*
+	 * forValidator is false in uplpgsql_compile here: we are executing, not
+	 * validating.  It must not be confused with the trigger flags — those
+	 * reach do_compile() through fcinfo's context, which is already set up
+	 * by the caller.  Passing the trigger flag compiled every trigger in
+	 * validator mode on every fire, which ran the extra syntax checks at
+	 * execution time and, worse, applied uplpgsql.extra_warnings/
+	 * extra_errors to a running trigger — so a DML statement could fail
+	 * purely because a GUC was set.
+	 */
+	call(FunctionCallInfo fcinfo, bool nonatomic)
+		: fcinfo_(fcinfo),
+		  nonatomic_(nonatomic),
+		  func_(cppgres::ffi_guard{uplpgsql_compile}(fcinfo, false)),
+		  busy_(func_),
+		  procedure_resowner_(nonatomic &&
+							  func_->requires_procedure_resowner)
+	{
+	}
+
+	Datum
+	execute()
+	{
+		/* Event triggers always run under the interpreter (JIT: future work) */
+		if (CALLED_AS_EVENT_TRIGGER(fcinfo_))
+		{
+			cppgres::ffi_guard{uplpgsql_exec_event_trigger}(
+				func_, (EventTriggerData *) fcinfo_->context);
+			return (Datum) 0;
+		}
+
+		UPLpgSQL_func *jit = jit_lookup_or_compile(func_);
+
+		if (CALLED_AS_TRIGGER(fcinfo_))
+		{
+			auto *trigdata = (TriggerData *) fcinfo_->context;
+
+			return PointerGetDatum(
+				jit != nullptr
+					? cppgres::ffi_guard{uplpgsql_exec_trigger_jit}(
+						  func_, trigdata, jit->jit_func)
+					: cppgres::ffi_guard{uplpgsql_exec_trigger}(func_,
+																trigdata));
+		}
+
+		return jit != nullptr
+			? cppgres::ffi_guard{uplpgsql_exec_function_jit}(
+				  func_, fcinfo_, nullptr, nullptr, procedure_resowner_,
+				  !nonatomic_, jit->jit_func)
+			: cppgres::ffi_guard{uplpgsql_exec_function}(
+				  func_, fcinfo_, nullptr, nullptr, procedure_resowner_,
+				  !nonatomic_);
+	}
+
+	call(const call &) = delete;
+	call &operator=(const call &) = delete;
+
+private:
+	FunctionCallInfo fcinfo_;
+	bool		nonatomic_;
+	UPLpgSQL_function *func_;
+	function_busy_guard busy_;
+	procedure_resowner_guard procedure_resowner_;
+};
+
+/*
+ * One DO block.
+ *
+ * Compiles the anonymous code block and owns its call-scoped state: the
+ * busy/free bookkeeping (a DO block's AST is single-use), the private
+ * EState and resource owner for simple-expression execution (they must
+ * survive any COMMIT/ROLLBACK the block executes), and a fake fcinfo with
+ * just enough in it to satisfy uplpgsql_exec_function().
+ */
+class do_block
+{
+public:
+	explicit do_block(InlineCodeBlock *codeblock)
+		: codeblock_(codeblock),
+		  func_(cppgres::ffi_guard{uplpgsql_compile_inline}(
+			  codeblock->source_text)),
+		  func_guard_(func_)
+	{
+		MemSet(&fc_, 0, SizeForFunctionCallInfo(0));
+		MemSet(&flinfo_, 0, sizeof(flinfo_));
+		fc_.fcinfo.flinfo = &flinfo_;
+		flinfo_.fn_oid = InvalidOid;
+		flinfo_.fn_mcxt = CurrentMemoryContext;
+	}
+
+	Datum
+	execute()
+	{
+		/*
+		 * On failure only, fire the subtransaction-abort callback so
+		 * partially-set-up execution state is torn down before this
+		 * object's resources are released.
+		 */
+		abort_callback_guard on_error;
+
+		return cppgres::ffi_guard{uplpgsql_exec_function}(
+			func_, &fc_.fcinfo, simple_eval_.estate(),
+			simple_eval_.resowner(), simple_eval_.resowner(),
+			codeblock_->atomic);
+	}
+
+	do_block(const do_block &) = delete;
+	do_block &operator=(const do_block &) = delete;
+
+private:
+	InlineCodeBlock *codeblock_;
+	UPLpgSQL_function *func_;
+	inline_function_guard func_guard_;
+	simple_eval_resources simple_eval_;
+	FmgrInfo	flinfo_;
+
+	/*
+	 * A zero-argument fcinfo (FunctionCallInfoBaseData ends in a flexible
+	 * array member, so this must be the last member).
+	 */
+	union
+	{
+		FunctionCallInfoBaseData fcinfo;
+		char		fcinfo_data[SizeForFunctionCallInfo(0)];
+	}			fc_;
+};
+
 } // namespace uplpgsql
 
 /*
@@ -684,96 +822,27 @@ jit_lookup_or_compile(UPLpgSQL_function *func)
  * call and execute the native code. On subsequent calls, the cached JIT'd
  * function is used directly. Falls back to the interpreter for event
  * triggers (JIT support for those is future work).
+ *
+ * Postgres errors surface as pg_exception (every call into the engine runs
+ * under cppgres::ffi_guard), so cleanup is RAII; the boundary re-throws to
+ * Postgres with full fidelity.
  */
 Datum
 uplpgsql_call_handler(PG_FUNCTION_ARGS)
 {
 	bool		nonatomic;
-	bool		isTrigger;
-	bool		isEventTrigger;
 	Datum		retval = (Datum) 0;
 
 	nonatomic = fcinfo->context &&
 		IsA(fcinfo->context, CallContext) &&
 		!castNode(CallContext, fcinfo->context)->atomic;
 
-	isTrigger = CALLED_AS_TRIGGER(fcinfo);
-	isEventTrigger = CALLED_AS_EVENT_TRIGGER(fcinfo);
-
-	/*
-	 * Postgres errors below surface as pg_exception (every call into the
-	 * engine runs under cppgres::ffi_guard), so the guards' destructors run
-	 * on both exit paths; the catch clauses at the end re-throw to Postgres
-	 * with full fidelity.
-	 */
 	try
 	{
 		uplpgsql::spi_session spi(nonatomic ? SPI_OPT_NONATOMIC : 0);
+		uplpgsql::call call(fcinfo, nonatomic);
 
-		/*
-		 * Compile the function (get AST via our forked parser).
-		 *
-		 * forValidator is false here: we are executing, not validating.  It
-		 * must not be confused with the trigger flags — those reach
-		 * do_compile() through fcinfo's context, which is already set up by
-		 * the caller.  Passing the trigger flag compiled every trigger in
-		 * validator mode on every fire, which ran the extra syntax checks at
-		 * execution time and, worse, applied uplpgsql.extra_warnings/
-		 * extra_errors to a running trigger — so a DML statement could fail
-		 * purely because a GUC was set.
-		 */
-		UPLpgSQL_function *func =
-			cppgres::ffi_guard{uplpgsql_compile}(fcinfo, false);
-
-		/* Mark the function as busy, so it can't be deleted from under us */
-		uplpgsql::function_busy_guard busy(func);
-
-		/*
-		 * If we'll need a procedure-lifespan resowner to execute any CALL or
-		 * DO statements, create it now.
-		 */
-		uplpgsql::procedure_resowner_guard procedure_resowner(
-			nonatomic && func->requires_procedure_resowner);
-
-		/*
-		 * For regular functions and triggers, try the JIT path.
-		 * Event triggers still use the interpreter.
-		 */
-		UPLpgSQL_func *jitfunc =
-			isEventTrigger ? nullptr : uplpgsql::jit_lookup_or_compile(func);
-
-		if (isTrigger)
-		{
-			auto exec = jitfunc != nullptr
-				? cppgres::ffi_guard{uplpgsql_exec_trigger_jit}(
-					  func, (TriggerData *) fcinfo->context,
-					  jitfunc->jit_func)
-				: cppgres::ffi_guard{uplpgsql_exec_trigger}(
-					  func, (TriggerData *) fcinfo->context);
-
-			retval = PointerGetDatum(exec);
-		}
-		else if (isEventTrigger)
-		{
-			cppgres::ffi_guard{uplpgsql_exec_event_trigger}(
-				func, (EventTriggerData *) fcinfo->context);
-			/* there's no return value in this case */
-		}
-		else if (jitfunc != nullptr)
-		{
-			/* Execute via JIT'd native code */
-			retval = cppgres::ffi_guard{uplpgsql_exec_function_jit}(
-				func, fcinfo, (EState *) nullptr, (ResourceOwner) nullptr,
-				(ResourceOwner) procedure_resowner, !nonatomic,
-				jitfunc->jit_func);
-		}
-		else
-		{
-			/* Fallback to interpreter */
-			retval = cppgres::ffi_guard{uplpgsql_exec_function}(
-				func, fcinfo, (EState *) nullptr, (ResourceOwner) nullptr,
-				(ResourceOwner) procedure_resowner, !nonatomic);
-		}
+		retval = call.execute();
 	}
 	catch (cppgres::pg_exception &e)
 	{
@@ -800,54 +869,16 @@ uplpgsql_call_handler(PG_FUNCTION_ARGS)
 Datum
 uplpgsql_inline_handler(PG_FUNCTION_ARGS)
 {
-	LOCAL_FCINFO(fake_fcinfo, 0);
 	InlineCodeBlock *codeblock = castNode(InlineCodeBlock,
 										  DatumGetPointer(PG_GETARG_DATUM(0)));
-	FmgrInfo	flinfo;
 	Datum		retval = (Datum) 0;
 
 	try
 	{
 		uplpgsql::spi_session spi(codeblock->atomic ? 0 : SPI_OPT_NONATOMIC);
+		uplpgsql::do_block block(codeblock);
 
-		/* Compile the anonymous code block */
-		UPLpgSQL_function *func = cppgres::ffi_guard{uplpgsql_compile_inline}(
-			codeblock->source_text);
-
-		/*
-		 * Mark the function as busy (just pro forma) and arrange for its
-		 * memory to be freed on every exit path — a DO block's AST is
-		 * single-use.
-		 */
-		uplpgsql::inline_function_guard func_guard(func);
-
-		/*
-		 * Set up a fake fcinfo with just enough info to satisfy
-		 * uplpgsql_exec_function().
-		 */
-		MemSet(fake_fcinfo, 0, SizeForFunctionCallInfo(0));
-		MemSet(&flinfo, 0, sizeof(flinfo));
-		fake_fcinfo->flinfo = &flinfo;
-		flinfo.fn_oid = InvalidOid;
-		flinfo.fn_mcxt = CurrentMemoryContext;
-
-		/*
-		 * Create a private EState and resowner for simple-expression
-		 * execution.  These must survive any COMMIT/ROLLBACK the DO block
-		 * executes, and are released on every exit path.
-		 */
-		uplpgsql::simple_eval_resources simple_eval;
-
-		/*
-		 * On failure only: fire the subtransaction-abort callback so
-		 * partially-set-up execution state is torn down before the
-		 * resources above are released (guards destruct innermost-first).
-		 */
-		uplpgsql::abort_callback_guard on_error;
-
-		retval = cppgres::ffi_guard{uplpgsql_exec_function}(
-			func, fake_fcinfo, simple_eval.estate(), simple_eval.resowner(),
-			simple_eval.resowner(), codeblock->atomic);
+		retval = block.execute();
 	}
 	catch (cppgres::pg_exception &e)
 	{
