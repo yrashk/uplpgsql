@@ -159,9 +159,10 @@ expr_append_block(UPL_compile_ctx *ctx, const char *name)
  * Resolve array element type info at compile time and emit LLVM constants.
  * Avoids repeated get_element_type()/get_typlenbyvalalign() at runtime.
  */
-void
-function_compiler::resolve_array_type_info(int array_dno, ArrayTypeInfo *info)
+ArrayTypeInfo
+function_compiler::resolve_array_type_info(int array_dno)
 {
+	ArrayTypeInfo	info;
 	UPLpgSQL_var   *arrayvar;
 	Oid				elemtype;
 	int16			elmlen;
@@ -172,9 +173,9 @@ function_compiler::resolve_array_type_info(int array_dno, ArrayTypeInfo *info)
 	elemtype = get_element_type(arrayvar->datatype->typoid);
 	get_typlenbyvalalign(elemtype, &elmlen, &elmbyval, &elmalign);
 
-	info->typlen_val = llvm::ConstantInt::get(ctx->types[UPL_INT32],
-											  arrayvar->datatype->typlen, true);
-	info->elemtype_val = llvm::ConstantInt::get(ctx->types[UPL_INT32], elemtype, false);
+	info.typlen_val = llvm::ConstantInt::get(ctx->types[UPL_INT32],
+											 arrayvar->datatype->typlen, true);
+	info.elemtype_val = llvm::ConstantInt::get(ctx->types[UPL_INT32], elemtype, false);
 	/*
 	 * Emit elmlen as i32, not i16.  A varlena element type has elmlen == -1,
 	 * and a negative i16 argument passed to the runtime helper without a
@@ -182,9 +183,11 @@ function_compiler::resolve_array_type_info(int array_dno, ArrayTypeInfo *info)
 	 * array_get_element rejects.  Widening to a full int sidesteps the ABI
 	 * ambiguity; fixed-length elements are unaffected either way.
 	 */
-	info->elmlen_val = llvm::ConstantInt::get(ctx->types[UPL_INT32], elmlen, true);
-	info->elmbyval_val = llvm::ConstantInt::get(ctx->types[UPL_INT1], elmbyval ? 1 : 0, false);
-	info->elmalign_val = llvm::ConstantInt::get(ctx->types[UPL_INT8], elmalign, false);
+	info.elmlen_val = llvm::ConstantInt::get(ctx->types[UPL_INT32], elmlen, true);
+	info.elmbyval_val = llvm::ConstantInt::get(ctx->types[UPL_INT1], elmbyval ? 1 : 0, false);
+	info.elmalign_val = llvm::ConstantInt::get(ctx->types[UPL_INT8], elmalign, false);
+
+	return info;
 }
 
 
@@ -690,9 +693,8 @@ function_compiler::tier1_expr_any_null(Expr *expr, llvm::Value *estate_ref)
 					}
 
 					{
-						ArrayTypeInfo ati;
+						ArrayTypeInfo ati = resolve_array_type_info(array_dno);
 
-						resolve_array_type_info(array_dno, &ati);
 						{
 							llvm::Value *args[] = {
 								estate_ref,
@@ -956,74 +958,88 @@ function_compiler::emit_store_var_null(llvm::Value *estate_ref, int dno)
  */
 
 /*
+ * Prepare and keep a plan for a PL/pgSQL expression at JIT compile time.
+ * Returns the kept SPIPlanPtr, or NULL if preparation failed and the
+ * caller should fall back to the runtime helper.  Does NOT assign
+ * expr->plan — call sites keep their own bookkeeping.
+ *
+ * The parser callbacks in upl_comp.c access expr->func->cur_estate to
+ * resolve variable names and types.  At compile time cur_estate is NULL,
+ * so we provide a minimal fake estate with the function's datums array —
+ * that's all resolve_column_ref/make_datum_param need for scalar
+ * variables.
+ *
+ * For record fields or other complex datums, SPI_prepare_extended may
+ * throw an error (e.g. "record not assigned yet").  We catch that and
+ * return NULL to fall back to the runtime helper.
+ */
+SPIPlanPtr
+function_compiler::prepare_plan_compile_time(UPLpgSQL_expr *expr)
+{
+	UPLpgSQL_function *func = func_;
+	UPLpgSQL_execstate fake_estate;
+	SPIPrepareOptions options;
+
+	memset(&fake_estate, 0, sizeof(fake_estate));
+	fake_estate.ndatums = func->ndatums;
+	fake_estate.datums = func->datums;
+
+	/* Point cur_estate at the fake estate; restore on every exit path */
+	struct cur_estate_scope
+	{
+		UPLpgSQL_function  *func;
+		UPLpgSQL_execstate *saved;
+
+		cur_estate_scope(UPLpgSQL_function *f, UPLpgSQL_execstate *fake)
+			: func(f), saved(std::exchange(f->cur_estate, fake))
+		{
+		}
+		~cur_estate_scope()
+		{
+			func->cur_estate = saved;
+		}
+	}				scope(func, &fake_estate);
+
+	memset(&options, 0, sizeof(options));
+	options.parserSetup = (ParserSetupHook) uplpgsql_parser_setup;
+	options.parserSetupArg = expr;
+	options.parseMode = expr->parseMode;
+	options.cursorOptions = CURSOR_OPT_PARALLEL_OK;
+
+	try
+	{
+		auto prepared =
+			cppgres::spi_executor::current().plan(expr->query, options);
+
+		prepared.keep();
+		return prepared.release();
+	}
+	catch (const std::exception &)
+	{
+		/*
+		 * Swallow the error and fall back to the runtime helper.  A
+		 * pg_exception has already restored the memory context and
+		 * flushed the error state by this point.
+		 */
+		return NULL;
+	}
+}
+
+/*
  * Prepare a PL/pgSQL expression via SPI and extract the Expr tree.
  * Returns NULL if the expression is not simple.
- *
- * The PL/pgSQL parser callbacks (uplpgsql_parser_setup) require
- * expr->func->cur_estate to be set for variable type resolution.
- * At JIT compile time, no execution state exists yet, so we create a
- * minimal temporary execstate backed by the function's datums array.
  */
 Expr *
 function_compiler::prepare_and_get_expr(UPLpgSQL_expr *expr)
 {
-	SPIPlanPtr		plan;
-	SPIPrepareOptions options;
 	List		   *plansources;
 	CachedPlanSource *plansource;
 	Query		   *query;
 	TargetEntry	   *tle;
-	UPLpgSQL_function *func = func_;
 
 	if (expr->plan == NULL)
 	{
-		UPLpgSQL_execstate fake_estate;
-		UPLpgSQL_execstate *saved_estate;
-
-		/*
-		 * The parser callbacks in upl_comp.c access expr->func->cur_estate
-		 * to resolve variable names and types.  At compile time cur_estate
-		 * is NULL, so we provide a minimal fake estate with the function's
-		 * datums array — that's all resolve_column_ref/make_datum_param need
-		 * for scalar variables.
-		 *
-		 * For record fields or other complex datums, SPI_prepare_extended
-		 * may throw an error (e.g. "record not assigned yet").  We catch
-		 * that and return NULL to fall back to the runtime helper.
-		 */
-		memset(&fake_estate, 0, sizeof(fake_estate));
-		fake_estate.ndatums = func->ndatums;
-		fake_estate.datums = func->datums;
-
-		saved_estate = func->cur_estate;
-		func->cur_estate = &fake_estate;
-
-		memset(&options, 0, sizeof(options));
-		options.parserSetup = (ParserSetupHook) uplpgsql_parser_setup;
-		options.parserSetupArg = expr;
-		options.parseMode = expr->parseMode;
-		options.cursorOptions = CURSOR_OPT_PARALLEL_OK;
-
-		try
-		{
-			auto prepared =
-				cppgres::spi_executor::current().plan(expr->query, options);
-
-			prepared.keep();
-			plan = prepared.release();
-		}
-		catch (const std::exception &)
-		{
-			/*
-			 * Swallow the error and fall back to the runtime helper.  A
-			 * pg_exception has already restored the memory context and
-			 * flushed the error state by this point.
-			 */
-			func->cur_estate = saved_estate;
-			return NULL;
-		}
-
-		func->cur_estate = saved_estate;
+		SPIPlanPtr		plan = prepare_plan_compile_time(expr);
 
 		if (plan == NULL)
 			return NULL;
@@ -2294,9 +2310,8 @@ function_compiler::compile_expr_datum(Expr *expr,
 
 					/* Call RT_ARRAY_GET_ELEMENT with compile-time type info */
 					{
-						ArrayTypeInfo ati;
+						ArrayTypeInfo ati = resolve_array_type_info(array_dno);
 
-						resolve_array_type_info(array_dno, &ati);
 						{
 							llvm::Value *args[] = {
 								estate_ref,
@@ -4496,11 +4511,10 @@ not_native_init:
 					ctx->builder->SetInsertPoint(slow_bb);
 					emit_sync_native_array(na);
 					{
-						ArrayTypeInfo	ati;
+						ArrayTypeInfo	ati = resolve_array_type_info(array_dno);
 						llvm::Value	*datum_val;
 
 						datum_val = native_to_datum(ctx, val_result, val_class);
-						resolve_array_type_info(array_dno, &ati);
 
 						{
 							llvm::Value *args[] = {
@@ -4702,9 +4716,8 @@ standard_array_path:
 					}
 
 					{
-						ArrayTypeInfo ati;
+						ArrayTypeInfo ati = resolve_array_type_info(array_dno);
 
-						resolve_array_type_info(array_dno, &ati);
 						{
 							llvm::Value *args[] = {
 								estate_ref,
@@ -4782,9 +4795,8 @@ standard_array_path:
 							val_isnull = llvm::ConstantInt::get(ctx->types[UPL_INT1], 0, false);
 
 						{
-							ArrayTypeInfo ati;
+							ArrayTypeInfo ati = resolve_array_type_info(array_dno);
 
-							resolve_array_type_info(array_dno, &ati);
 							{
 								llvm::Value *args[] = {
 									estate_ref,
@@ -4826,11 +4838,10 @@ standard_array_path:
  * Tier 1: native LLVM icmp/fcmp for known int/float comparisons
  * Tier 2: direct PG function call, result truncated to i1
  *
- * Returns true if inlined (result in *result_out), false → use runtime helper.
+ * Returns the inlined i1 condition value, or NULL → use runtime helper.
  */
-bool
-function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
-									llvm::Value **result_out)
+llvm::Value *
+function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node)
 {
 	Expr		   *expr;
 	ExprTypeClass	tc;
@@ -4844,11 +4855,11 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 	 * are settled.
 	 */
 	if (ctx->defer_cond_plan)
-		return false;
+		return NULL;
 
 	expr = prepare_and_get_expr(expr_node);
 	if (expr == NULL)
-		return false;
+		return NULL;
 
 	/* Tier 1: native LLVM comparisons */
 	tc = classify_expr(expr);
@@ -4862,10 +4873,7 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 		any_null = tier1_expr_any_null(expr, estate_ref);
 
 		if (any_null == NULL)
-		{
-			*result_out = compile_expr_bool(expr, estate_ref);
-			return true;
-		}
+			return compile_expr_bool(expr, estate_ref);
 
 		/*
 		 * A NULL operand makes the condition NULL, and callers (IF, WHILE,
@@ -4903,9 +4911,8 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 			phi->addIncoming(vals[0], blocks[0]);
 			phi->addIncoming(vals[1], blocks[1]);
 
-			*result_out = phi;
+			return phi;
 		}
-		return true;
 	}
 
 	/* Tier 2: fmgr bypass — result is Datum, truncate to i1 */
@@ -4940,6 +4947,7 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 		if (datum_result != NULL)
 		{
 			llvm::Value	*val;
+			llvm::Value	*cond;
 
 			val = ctx->builder->CreateTrunc(datum_result, ctx->types[UPL_INT1], "fmgr.bool.result");
 
@@ -4949,7 +4957,7 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 			 * true datum with isnull set, and without this it would take the
 			 * THEN branch.
 			 */
-			*result_out = ctx->builder->CreateAnd(val,
+			cond = ctx->builder->CreateAnd(val,
 				ctx->builder->CreateNot(isnull_val, "fmgr.bool.notnull"),
 				"fmgr.bool.cond");
 			if (scoped)
@@ -4958,7 +4966,7 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 
 				ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 			}
-			return true;
+			return cond;
 		}
 		/* fmgr_full bailed: restore the context before Tier 3 */
 		if (scoped)
@@ -4982,14 +4990,14 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 	}
 
 	/*
-	 * Returning false makes the caller emit RT_EVAL_BOOL, which evaluates
+	 * Returning NULL makes the caller emit RT_EVAL_BOOL, which evaluates
 	 * this condition in the interpreter and reads variables as PG Datums.
 	 * Sync native arrays first, or a condition over one (IF array_length(x,1)
 	 * = 3) sees the stale Datum instead of the live flat memory.
 	 */
 	sync_native_arrays();
 
-	return false;
+	return NULL;
 }
 
 } /* namespace uplpgsql */

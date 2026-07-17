@@ -1001,12 +1001,12 @@ upl_emit_block(UPL_compile_ctx *ctx,
  * This is the main entry point called by language drivers.  It:
  *   1. Creates LLVM context/module/builder
  *   2. Registers types
- *   3. Calls hooks->register_rt_funcs() for runtime function declarations
+ *   3. Calls hooks.register_rt_funcs() for runtime function declarations
  *   4. Creates the LLVM function with UPL_FUNC_TYPE signature
  *   5. Registers sigsetjmp (returns_twice attribute)
  *   6. Creates entry/return blocks, rc alloca, estate param
- *   7. Calls hooks->setup_entry() for driver-specific setup
- *   8. Calls hooks->compile_body() for AST compilation
+ *   7. Calls hooks.setup_entry() for driver-specific setup
+ *   8. Calls hooks.compile_body() for AST compilation
  *   9. Falls through to return block
  *  10. Adds nounwind if no exceptions
  *  11. Verifies, optimizes (O3), JIT compiles via OrcJIT
@@ -1018,7 +1018,7 @@ upl_emit_block(UPL_compile_ctx *ctx,
  * releases the LLVM resources through its destructors.
  */
 void *
-upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
+upl_compile_function(UPL_compile_ctx *ctx, const UPL_compile_hooks &hooks)
 {
 	char			func_name[NAMEDATALEN + 32];
 	llvm::Value	   *estate_ref;
@@ -1031,7 +1031,7 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 	 * collide with the old symbol still present in OrcJIT.
 	 */
 	snprintf(func_name, sizeof(func_name), "%s_%u_g" UINT64_FORMAT,
-			 hooks->func_name_prefix, hooks->fn_oid, compile_gen++);
+			 hooks.func_name_prefix, hooks.fn_oid, compile_gen++);
 
 	/* 1. Create LLVM context, module, builder */
 	ctx->context = std::make_unique<llvm::LLVMContext>();
@@ -1049,7 +1049,7 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 	upl_register_types(ctx);
 
 	/* 3. Register runtime function declarations (driver) */
-	hooks->register_rt_funcs(ctx);
+	hooks.register_rt_funcs(ctx);
 
 	/* 4. Create the LLVM function: int32 func(ptr estate) */
 	ctx->function = llvm::Function::Create(
@@ -1088,7 +1088,7 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 	/* 7. Allocate return code storage, store default */
 	ctx->rc_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32],
 											 nullptr, "rc");
-	ctx->builder->CreateStore(upl_const_int32(ctx, hooks->default_rc),
+	ctx->builder->CreateStore(upl_const_int32(ctx, hooks.default_rc),
 							  ctx->rc_ptr);
 
 	/* 8. Get estate parameter (first arg) */
@@ -1102,8 +1102,8 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 	 * raise Postgres errors for unsupported constructs — guard them so the
 	 * error unwinds as a C++ exception.
 	 */
-	cppgres::ffi_guard{hooks->setup_entry}(ctx);
-	cppgres::ffi_guard{hooks->compile_body}(ctx);
+	cppgres::ffi_guard{hooks.setup_entry}(ctx);
+	cppgres::ffi_guard{hooks.compile_body}(ctx);
 
 	/* 11. Fall through to return block */
 	ctx->builder->CreateBr(ctx->return_bb);
@@ -1126,7 +1126,7 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 	cppgres::ffi_guard{upl_verify_module}(*ctx->module);
 
 	/* 14a. Optionally dump the IR (uplpgsql.dump_ir). */
-	if (hooks->dump_ir)
+	if (hooks.dump_ir)
 	{
 		std::string irstr;
 		llvm::raw_string_ostream os(irstr);

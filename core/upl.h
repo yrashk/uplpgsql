@@ -391,7 +391,7 @@ extern void *upl_jit_compile(std::unique_ptr<llvm::Module> module,
 
 /* Compilation pipeline — driver calls this */
 extern void *upl_compile_function(UPL_compile_ctx *ctx,
-								  UPL_compile_hooks *hooks);
+								  const UPL_compile_hooks &hooks);
 
 /* Loop stack management */
 extern void upl_push_loop(UPL_compile_ctx *ctx, const char *label,

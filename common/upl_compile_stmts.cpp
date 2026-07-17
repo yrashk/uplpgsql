@@ -215,7 +215,13 @@ function_compiler::cb_try_compile_bool(UPL_compile_ctx *ctx,
 									   void *expr,
 									   llvm::Value **result_out)
 {
-	return self(ctx)->try_compile_bool((UPLpgSQL_expr *) expr, result_out);
+	llvm::Value *cond = self(ctx)->try_compile_bool((UPLpgSQL_expr *) expr);
+
+	if (cond == NULL)
+		return false;
+
+	*result_out = cond;
+	return true;
 }
 
 /* Callback: assign expression to variable (for CASE test expr) */
@@ -1402,25 +1408,22 @@ function_compiler::function_compiler(UPLpgSQL_function *func) : func_(func)
 UPLpgSQL_func *
 function_compiler::compile()
 {
-	UPL_compile_hooks	hooks;
+	UPL_compile_hooks	hooks = {
+		.register_rt_funcs = cb_register_rt_funcs,
+		.setup_entry = cb_setup_entry,
+		.compile_body = cb_compile_body,
+		.func_name_prefix = "uplpgsql_fn",
+		.fn_oid = func_->fn_oid,
+		.fn_xmin = func_->cfunc.fn_xmin,
+		.fn_tid = func_->cfunc.fn_tid,
+		.default_rc = UPLPGSQL_RC_OK,
+		.dump_ir = uplpgsql_dump_ir,
+	};
 	UPLpgSQL_func	   *result;
 	void			   *fn_ptr;
 
-	memset(&hooks, 0, sizeof(hooks));
-
-	/* Setup pipeline hooks */
-	hooks.register_rt_funcs = cb_register_rt_funcs;
-	hooks.setup_entry = cb_setup_entry;
-	hooks.compile_body = cb_compile_body;
-	hooks.func_name_prefix = "uplpgsql_fn";
-	hooks.fn_oid = func_->fn_oid;
-	hooks.fn_xmin = func_->cfunc.fn_xmin;
-	hooks.fn_tid = func_->cfunc.fn_tid;
-	hooks.default_rc = UPLPGSQL_RC_OK;
-	hooks.dump_ir = uplpgsql_dump_ir;
-
 	/* Run the core compilation pipeline */
-	fn_ptr = upl_compile_function(&ctx_, &hooks);
+	fn_ptr = upl_compile_function(&ctx_, hooks);
 
 	/* Create cached function result */
 	result = (UPLpgSQL_func *) MemoryContextAllocZero(TopMemoryContext,
@@ -2797,7 +2800,8 @@ function_compiler::compile_assert(UPLpgSQL_stmt_assert *stmt)
 	llvm::BasicBlock	*cont_bb;
 
 	/* Evaluate condition — try native inlining first */
-	if (!try_compile_bool(stmt->cond, &cond))
+	cond = try_compile_bool(stmt->cond);
+	if (cond == NULL)
 	{
 		llvm::Value *args[] = {
 			estate_ref,
@@ -2989,44 +2993,9 @@ function_compiler::compile_fors(UPLpgSQL_stmt_fors *stmt)
 			if (rec->rectypeid == RECORDOID && rec->erh == NULL &&
 				stmt->query->plan == NULL)
 			{
-				UPLpgSQL_function  *func = func_;
-				UPLpgSQL_execstate	fake_estate;
-				UPLpgSQL_execstate *saved_estate;
-				SPIPrepareOptions	options;
 				SPIPlanPtr			plan;
 
-				/* Set up fake execstate for parser callbacks */
-				memset(&fake_estate, 0, sizeof(fake_estate));
-				fake_estate.ndatums = func->ndatums;
-				fake_estate.datums = func->datums;
-
-				saved_estate = func->cur_estate;
-				func->cur_estate = &fake_estate;
-
-				memset(&options, 0, sizeof(options));
-				options.parserSetup = (ParserSetupHook) uplpgsql_parser_setup;
-				options.parserSetupArg = stmt->query;
-				options.parseMode = stmt->query->parseMode;
-				options.cursorOptions = CURSOR_OPT_PARALLEL_OK;
-
-				try
-				{
-					auto prepared = cppgres::spi_executor::current().plan(
-						stmt->query->query, options);
-
-					prepared.keep();
-					plan = prepared.release();
-				}
-				catch (const std::exception &)
-				{
-					/*
-					 * Fall back below; a pg_exception has already restored
-					 * the memory context and flushed the error state.
-					 */
-					plan = NULL;
-				}
-
-				func->cur_estate = saved_estate;
+				plan = prepare_plan_compile_time(stmt->query);
 
 				if (plan != NULL)
 				{

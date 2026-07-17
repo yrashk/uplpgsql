@@ -251,10 +251,10 @@ private:
 
 	/* three-tier entry points */
 	bool		try_compile_assign(UPLpgSQL_stmt_assign *stmt);
-	bool		try_compile_bool(UPLpgSQL_expr *expr_node,
-								 llvm::Value **result_out);
+	llvm::Value *try_compile_bool(UPLpgSQL_expr *expr_node);
 
 	/* compile-time SPI prepare + simple expression extraction */
+	SPIPlanPtr	prepare_plan_compile_time(UPLpgSQL_expr *expr);
 	Expr	   *prepare_and_get_expr(UPLpgSQL_expr *expr);
 
 	/* Tier 1: native LLVM instructions */
@@ -288,7 +288,7 @@ private:
 	void		emit_store_var_null(llvm::Value *estate_ref, int dno);
 
 	/* array subscript helpers */
-	void		resolve_array_type_info(int array_dno, ArrayTypeInfo *info);
+	ArrayTypeInfo resolve_array_type_info(int array_dno);
 	void		emit_set_subscript_null_check(Expr *idx_expr,
 											  llvm::Value *estate_ref);
 };
