@@ -197,16 +197,11 @@ void
 upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
 				 llvm::ArrayRef<llvm::Value *> args)
 {
-	UPL_cleanup_info cleanup = {};
-	size_t		i;
-
-	Assert(args.size() <= UPL_CLEANUP_MAX_ARGS);
+	UPL_cleanup_info cleanup;
 
 	cleanup.unwind_rt_fn = unwind_rt_fn;
-	cleanup.nargs = (int) args.size();
-	for (i = 0; i < args.size(); i++)
-		cleanup.args[i] = args[i];
-	ctx->cleanup_stack.push_back(cleanup);
+	cleanup.args.assign(args.begin(), args.end());
+	ctx->cleanup_stack.push_back(std::move(cleanup));
 }
 
 /*
@@ -236,16 +231,12 @@ upl_emit_cleanup_unwind(UPL_compile_ctx *ctx, int target_depth)
 	for (depth = (int) ctx->cleanup_stack.size(); depth > target_depth; depth--)
 	{
 		UPL_cleanup_info *cleanup = &ctx->cleanup_stack[depth - 1];
-		llvm::Value	   *args[1 + UPL_CLEANUP_MAX_ARGS];
-		int				i;
+		llvm::SmallVector<llvm::Value *, 3> call_args;
 
-		args[0] = ctx->estate_ref;
-		for (i = 0; i < cleanup->nargs; i++)
-			args[1 + i] = cleanup->args[i];
+		call_args.push_back(ctx->estate_ref);
+		call_args.append(cleanup->args.begin(), cleanup->args.end());
 
-		upl_emit_rt_call(ctx, cleanup->unwind_rt_fn,
-						 llvm::ArrayRef<llvm::Value *>(args,
-													   1 + cleanup->nargs));
+		upl_emit_rt_call(ctx, cleanup->unwind_rt_fn, call_args);
 	}
 }
 

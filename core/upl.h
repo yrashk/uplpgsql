@@ -64,6 +64,7 @@ extern "C" {
 #undef _
 #undef gettext
 
+#include <llvm/ADT/SmallVector.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/LLVMContext.h>
 #include <llvm/IR/Module.h>
@@ -156,17 +157,14 @@ typedef struct UPL_loop_info
  * across the resource — a try body (unwind_rt_fn = the try-exit helper,
  * which commits the subtransaction), a handler body (the handler-done
  * helper), a row-loop body (the portal-close helper) — and pops it
- * afterwards.  args[] carries the helper's operands after estate_ref, e.g.
+ * afterwards.  args carries the helper's operands after estate_ref, e.g.
  * the frame or portal pointer.  upl_emit_loop_exit() walks the stack down
  * to the target's recorded depth.
  */
-#define UPL_CLEANUP_MAX_ARGS	2
-
 typedef struct UPL_cleanup_info
 {
 	int					unwind_rt_fn;	/* rt_funcs[] index of release helper */
-	llvm::Value		   *args[UPL_CLEANUP_MAX_ARGS]; /* operands after estate */
-	int					nargs;			/* used entries in args[] */
+	llvm::SmallVector<llvm::Value *, 2> args;	/* operands after estate */
 } UPL_cleanup_info;
 
 /* Forward declaration for callbacks that reference the context */
