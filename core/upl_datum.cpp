@@ -47,18 +47,17 @@
  * all three public functions.
  *
  * Returns the datum pointer (opaque ptr to the language's variable struct).
- * Also sets *builder_out for convenience (callers always need it).
  */
-static LLVMValueRef
-emit_datum_ptr(UPL_compile_ctx *ctx, LLVMValueRef estate_ref, int dno,
+static llvm::Value *
+emit_datum_ptr(UPL_compile_ctx *ctx, llvm::Value *estate_ref, int dno,
 			   const char *prefix)
 {
-	LLVMBuilderRef		builder = ctx->builder;
+	llvm::IRBuilder<>  *builder = ctx->builder.get();
 	UPL_datum_offsets  *offsets = &ctx->datum_offsets;
-	LLVMTypeRef			i8 = ctx->types[UPL_INT8];
-	LLVMTypeRef			i64 = ctx->types[UPL_INT64];
-	LLVMTypeRef			ptr = ctx->types[UPL_PTR];
-	LLVMValueRef		off, gep, lang_state, datums, datum;
+	llvm::Type		   *i8 = ctx->types[UPL_INT8];
+	llvm::Type		   *i64 = ctx->types[UPL_INT64];
+	llvm::Type		   *ptr = ctx->types[UPL_PTR];
+	llvm::Value		   *off, *gep, *lang_state, *datums, *datum;
 	char				nbuf[64];
 
 	/*
@@ -70,21 +69,21 @@ emit_datum_ptr(UPL_compile_ctx *ctx, LLVMValueRef estate_ref, int dno,
 	(snprintf(nbuf, sizeof(nbuf), "%s." suffix, prefix), nbuf)
 
 	/* estate → lang_state (byte-offset GEP + pointer load) */
-	off = LLVMConstInt(i64, offsets->estate_to_lang_state, false);
-	gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1,
-						 UPL_DNAME("lang_state.ptr"));
-	lang_state = LLVMBuildLoad2(builder, ptr, gep, UPL_DNAME("lang_state"));
+	off = llvm::ConstantInt::get(i64, offsets->estate_to_lang_state, false);
+	gep = builder->CreateGEP(i8, estate_ref, off,
+							 UPL_DNAME("lang_state.ptr"));
+	lang_state = builder->CreateLoad(ptr, gep, UPL_DNAME("lang_state"));
 
 	/* lang_state → datums array pointer */
-	off = LLVMConstInt(i64, offsets->lang_state_to_datums, false);
-	gep = LLVMBuildGEP2(builder, i8, lang_state, &off, 1,
-						 UPL_DNAME("datums.ptr"));
-	datums = LLVMBuildLoad2(builder, ptr, gep, UPL_DNAME("datums"));
+	off = llvm::ConstantInt::get(i64, offsets->lang_state_to_datums, false);
+	gep = builder->CreateGEP(i8, lang_state, off,
+							 UPL_DNAME("datums.ptr"));
+	datums = builder->CreateLoad(ptr, gep, UPL_DNAME("datums"));
 
 	/* datums[dno] → individual datum pointer */
-	off = LLVMConstInt(i64, dno, false);
-	gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, UPL_DNAME("datum.slot"));
-	datum = LLVMBuildLoad2(builder, ptr, gep, UPL_DNAME("datum"));
+	off = llvm::ConstantInt::get(i64, dno, false);
+	gep = builder->CreateGEP(ptr, datums, off, UPL_DNAME("datum.slot"));
+	datum = builder->CreateLoad(ptr, gep, UPL_DNAME("datum"));
 
 #undef UPL_DNAME
 
@@ -101,22 +100,22 @@ emit_datum_ptr(UPL_compile_ctx *ctx, LLVMValueRef estate_ref, int dno,
  * datum types (RECFIELD, PROMISE, etc.) must be handled by the driver's
  * load_param_datum callback before falling through to this function.
  */
-LLVMValueRef
+llvm::Value *
 upl_emit_load_var_datum(UPL_compile_ctx *ctx,
-						LLVMValueRef estate_ref, int dno)
+						llvm::Value *estate_ref, int dno)
 {
-	LLVMBuilderRef		builder = ctx->builder;
+	llvm::IRBuilder<>  *builder = ctx->builder.get();
 	UPL_datum_offsets  *offsets = &ctx->datum_offsets;
-	LLVMTypeRef			i8 = ctx->types[UPL_INT8];
-	LLVMTypeRef			i64 = ctx->types[UPL_INT64];
-	LLVMValueRef		datum, off, gep;
+	llvm::Type		   *i8 = ctx->types[UPL_INT8];
+	llvm::Type		   *i64 = ctx->types[UPL_INT64];
+	llvm::Value		   *datum, *off, *gep;
 
 	datum = emit_datum_ptr(ctx, estate_ref, dno, "ld");
 
 	/* datum->value (Datum, i64) */
-	off = LLVMConstInt(i64, offsets->var_to_value, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "value.ptr");
-	return LLVMBuildLoad2(builder, i64, gep, "var.datum");
+	off = llvm::ConstantInt::get(i64, offsets->var_to_value, false);
+	gep = builder->CreateGEP(i8, datum, off, "value.ptr");
+	return builder->CreateLoad(i64, gep, "var.datum");
 }
 
 /*
@@ -131,33 +130,33 @@ upl_emit_load_var_datum(UPL_compile_ctx *ctx,
  */
 void
 upl_emit_store_var_datum(UPL_compile_ctx *ctx,
-						 LLVMValueRef estate_ref, int dno,
-						 LLVMValueRef datum_val)
+						 llvm::Value *estate_ref, int dno,
+						 llvm::Value *datum_val)
 {
-	LLVMBuilderRef		builder = ctx->builder;
+	llvm::IRBuilder<>  *builder = ctx->builder.get();
 	UPL_datum_offsets  *offsets = &ctx->datum_offsets;
-	LLVMTypeRef			i8 = ctx->types[UPL_INT8];
-	LLVMTypeRef			i64 = ctx->types[UPL_INT64];
-	LLVMValueRef		datum, off, gep;
-	LLVMValueRef		zero_i8;
+	llvm::Type		   *i8 = ctx->types[UPL_INT8];
+	llvm::Type		   *i64 = ctx->types[UPL_INT64];
+	llvm::Value		   *datum, *off, *gep;
+	llvm::Value		   *zero_i8;
 
 	datum = emit_datum_ptr(ctx, estate_ref, dno, "st");
-	zero_i8 = LLVMConstInt(i8, 0, false);
+	zero_i8 = llvm::ConstantInt::get(i8, 0, false);
 
 	/* datum->value = datum_val */
-	off = LLVMConstInt(i64, offsets->var_to_value, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "st.value.ptr");
-	LLVMBuildStore(builder, datum_val, gep);
+	off = llvm::ConstantInt::get(i64, offsets->var_to_value, false);
+	gep = builder->CreateGEP(i8, datum, off, "st.value.ptr");
+	builder->CreateStore(datum_val, gep);
 
 	/* datum->isnull = false */
-	off = LLVMConstInt(i64, offsets->var_to_isnull, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "st.isnull.ptr");
-	LLVMBuildStore(builder, zero_i8, gep);
+	off = llvm::ConstantInt::get(i64, offsets->var_to_isnull, false);
+	gep = builder->CreateGEP(i8, datum, off, "st.isnull.ptr");
+	builder->CreateStore(zero_i8, gep);
 
 	/* datum->freeval = false */
-	off = LLVMConstInt(i64, offsets->var_to_freeval, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "st.freeval.ptr");
-	LLVMBuildStore(builder, zero_i8, gep);
+	off = llvm::ConstantInt::get(i64, offsets->var_to_freeval, false);
+	gep = builder->CreateGEP(i8, datum, off, "st.freeval.ptr");
+	builder->CreateStore(zero_i8, gep);
 }
 
 /*
@@ -171,22 +170,22 @@ upl_emit_store_var_datum(UPL_compile_ctx *ctx,
  * Like load_var_datum, this handles only plain variables.  RECFIELD and
  * PROMISE types are handled by the driver's load_param_isnull callback.
  */
-LLVMValueRef
+llvm::Value *
 upl_emit_load_var_isnull(UPL_compile_ctx *ctx,
-						 LLVMValueRef estate_ref, int dno)
+						 llvm::Value *estate_ref, int dno)
 {
-	LLVMBuilderRef		builder = ctx->builder;
+	llvm::IRBuilder<>  *builder = ctx->builder.get();
 	UPL_datum_offsets  *offsets = &ctx->datum_offsets;
-	LLVMTypeRef			i1 = ctx->types[UPL_INT1];
-	LLVMTypeRef			i8 = ctx->types[UPL_INT8];
-	LLVMTypeRef			i64 = ctx->types[UPL_INT64];
-	LLVMValueRef		datum, off, gep, isnull_raw;
+	llvm::Type		   *i1 = ctx->types[UPL_INT1];
+	llvm::Type		   *i8 = ctx->types[UPL_INT8];
+	llvm::Type		   *i64 = ctx->types[UPL_INT64];
+	llvm::Value		   *datum, *off, *gep, *isnull_raw;
 
 	datum = emit_datum_ptr(ctx, estate_ref, dno, "in");
 
 	/* datum->isnull (i8, truncated to i1) */
-	off = LLVMConstInt(i64, offsets->var_to_isnull, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "isnull.ptr");
-	isnull_raw = LLVMBuildLoad2(builder, i8, gep, "isnull.raw");
-	return LLVMBuildTrunc(builder, isnull_raw, i1, "isnull");
+	off = llvm::ConstantInt::get(i64, offsets->var_to_isnull, false);
+	gep = builder->CreateGEP(i8, datum, off, "isnull.ptr");
+	isnull_raw = builder->CreateLoad(i8, gep, "isnull.raw");
+	return builder->CreateTrunc(isnull_raw, i1, "isnull");
 }

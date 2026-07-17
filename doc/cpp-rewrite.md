@@ -20,12 +20,26 @@ and from the LLVM C API to the LLVM C++ API.
    - `drivers/plpgsql/` handler — cppgres: `exception_guard`/`ffi_guard`,
      GUC registration, memory contexts, subtransaction-guarded compile
      fallback.
-   - `common/` — `uplpgsql::` namespace; RAII where lifetimes allow, C++
-     casts, `std::string_view`/`std::span` at internal seams. The exec
-     engine keeps its PG-derived structure (it is a fork of `pl_exec.c` and
-     must track PG semantics) but reads as C++.
+   - `common/` compile layer (`upl_compile_stmts.cpp`,
+     `upl_compile_expr.cpp`) — LLVM C++ API alongside core.
+   - `common/` fork layer (`upl_exec.cpp`, `upl_comp.cpp`, `upl_funcs.cpp`,
+     `upl_runtime.cpp`) — these are deliberate forks of PostgreSQL's
+     `pl_exec.c`/`pl_comp.c`/`pl_funcs.c` and their maintainability comes
+     from staying diffable against upstream.  They compile as C++20 and get
+     a light idiomatic pass (nullptr, no writable-string conversions, C++
+     types at the compiler seam), but keep PG structure and error flow by
+     design.  Their entry points keep C linkage: the bison parser and the
+     OrcJIT symbol resolution depend on it.
    - Grammar/scanner stay flex/bison with C skeletons, compiled as C++;
      actions are C++-clean.
+
+   Error-handling boundaries (implemented in the handler): code that
+   recovers from errors itself (the JIT-compile fallback) converts longjmp
+   to exceptions via `cppgres::ffi_guard` and uses RAII; execution paths
+   whose errors belong to the client stay Postgres-native (`PG_TRY`/
+   `PG_FINALLY`) to preserve error fidelity.  The compile pipeline keeps a
+   `PG_TRY` that resets the context's LLVM `unique_ptr`s on longjmp before
+   re-throwing.
 
 ## Invariants (do not break)
 

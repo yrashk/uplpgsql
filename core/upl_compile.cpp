@@ -45,6 +45,19 @@ extern "C" {
 }
 #endif
 
+/* See doc/cpp-rewrite.md on the _/gettext dance around LLVM C++ headers. */
+#undef _
+#undef gettext
+
+#include <llvm/Support/raw_ostream.h>
+
+#ifndef ENABLE_NLS
+#define gettext(x) (x)
+#endif
+#define _(x) gettext(x)
+
+#include <string>
+
 /*
  * Symbol name to emit for sigsetjmp.
  *
@@ -71,7 +84,7 @@ extern "C" {
 static uint64 compile_gen = 0;
 
 /* Internal helper: evaluate a boolean expression */
-static LLVMValueRef upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr);
+static llvm::Value *upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr);
 
 
 /* ----------------------------------------------------------------
@@ -87,18 +100,17 @@ static LLVMValueRef upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr);
  */
 void
 upl_push_loop(UPL_compile_ctx *ctx, const char *label,
-			  LLVMBasicBlockRef continue_bb,
-			  LLVMBasicBlockRef exit_bb)
+			  llvm::BasicBlock *continue_bb,
+			  llvm::BasicBlock *exit_bb)
 {
-	UPL_loop_info *info = (UPL_loop_info *) palloc(sizeof(UPL_loop_info));
+	UPL_loop_info info;
 
-	info->label = label;
-	info->is_loop = true;
-	info->continue_bb = continue_bb;
-	info->exit_bb = exit_bb;
-	info->cleanup_depth = ctx->cleanup_depth;
-	info->next = ctx->loop_stack;
-	ctx->loop_stack = info;
+	info.label = label;
+	info.is_loop = true;
+	info.continue_bb = continue_bb;
+	info.exit_bb = exit_bb;
+	info.cleanup_depth = (int) ctx->cleanup_stack.size();
+	ctx->loop_stack.push_back(info);
 }
 
 /*
@@ -111,17 +123,16 @@ upl_push_loop(UPL_compile_ctx *ctx, const char *label,
  */
 void
 upl_push_block_label(UPL_compile_ctx *ctx, const char *label,
-					 LLVMBasicBlockRef exit_bb)
+					 llvm::BasicBlock *exit_bb)
 {
-	UPL_loop_info *info = (UPL_loop_info *) palloc(sizeof(UPL_loop_info));
+	UPL_loop_info info;
 
-	info->label = label;
-	info->is_loop = false;
-	info->continue_bb = NULL;
-	info->exit_bb = exit_bb;
-	info->cleanup_depth = ctx->cleanup_depth;
-	info->next = ctx->loop_stack;
-	ctx->loop_stack = info;
+	info.label = label;
+	info.is_loop = false;
+	info.continue_bb = NULL;
+	info.exit_bb = exit_bb;
+	info.cleanup_depth = (int) ctx->cleanup_stack.size();
+	ctx->loop_stack.push_back(info);
 }
 
 /*
@@ -130,11 +141,8 @@ upl_push_block_label(UPL_compile_ctx *ctx, const char *label,
 void
 upl_pop_loop(UPL_compile_ctx *ctx)
 {
-	UPL_loop_info *top = ctx->loop_stack;
-
-	Assert(top != NULL);
-	ctx->loop_stack = top->next;
-	pfree(top);
+	Assert(!ctx->loop_stack.empty());
+	ctx->loop_stack.pop_back();
 }
 
 /*
@@ -144,10 +152,11 @@ upl_pop_loop(UPL_compile_ctx *ctx)
 UPL_loop_info *
 upl_find_loop(UPL_compile_ctx *ctx, const char *label)
 {
-	UPL_loop_info *info;
-
-	for (info = ctx->loop_stack; info != NULL; info = info->next)
+	/* Innermost entry is at the back of the vector */
+	for (auto it = ctx->loop_stack.rbegin(); it != ctx->loop_stack.rend(); ++it)
 	{
+		UPL_loop_info *info = &(*it);
+
 		if (label == NULL)
 		{
 			/*
@@ -184,20 +193,18 @@ upl_find_loop(UPL_compile_ctx *ctx, const char *label)
  */
 void
 upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
-				 LLVMValueRef *args, int nargs)
+				 llvm::Value **args, int nargs)
 {
-	UPL_cleanup_info *cleanup = (UPL_cleanup_info *) palloc(sizeof(UPL_cleanup_info));
+	UPL_cleanup_info cleanup = {};
 	int			i;
 
 	Assert(nargs >= 0 && nargs <= UPL_CLEANUP_MAX_ARGS);
 
-	cleanup->unwind_rt_fn = unwind_rt_fn;
-	cleanup->nargs = nargs;
+	cleanup.unwind_rt_fn = unwind_rt_fn;
+	cleanup.nargs = nargs;
 	for (i = 0; i < nargs; i++)
-		cleanup->args[i] = args[i];
-	cleanup->next = ctx->cleanup_stack;
-	ctx->cleanup_stack = cleanup;
-	ctx->cleanup_depth++;
+		cleanup.args[i] = args[i];
+	ctx->cleanup_stack.push_back(cleanup);
 }
 
 /*
@@ -206,12 +213,8 @@ upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
 void
 upl_pop_cleanup(UPL_compile_ctx *ctx)
 {
-	UPL_cleanup_info *top = ctx->cleanup_stack;
-
-	Assert(top != NULL);
-	ctx->cleanup_stack = top->next;
-	ctx->cleanup_depth--;
-	pfree(top);
+	Assert(!ctx->cleanup_stack.empty());
+	ctx->cleanup_stack.pop_back();
 }
 
 /*
@@ -226,12 +229,12 @@ upl_pop_cleanup(UPL_compile_ctx *ctx)
 static void
 upl_emit_cleanup_unwind(UPL_compile_ctx *ctx, int target_depth)
 {
-	UPL_cleanup_info   *cleanup = ctx->cleanup_stack;
-	int					depth;
+	int			depth;
 
-	for (depth = ctx->cleanup_depth; depth > target_depth; depth--)
+	for (depth = (int) ctx->cleanup_stack.size(); depth > target_depth; depth--)
 	{
-		LLVMValueRef	args[1 + UPL_CLEANUP_MAX_ARGS];
+		UPL_cleanup_info *cleanup = &ctx->cleanup_stack[depth - 1];
+		llvm::Value	   *args[1 + UPL_CLEANUP_MAX_ARGS];
 		int				i;
 
 		args[0] = ctx->estate_ref;
@@ -239,7 +242,6 @@ upl_emit_cleanup_unwind(UPL_compile_ctx *ctx, int target_depth)
 			args[1 + i] = cleanup->args[i];
 
 		upl_emit_rt_call(ctx, cleanup->unwind_rt_fn, args, 1 + cleanup->nargs);
-		cleanup = cleanup->next;
 	}
 }
 
@@ -254,16 +256,16 @@ upl_emit_cleanup_unwind(UPL_compile_ctx *ctx, int target_depth)
  *
  * rt_func_idx indexes into ctx->rt_funcs[] and ctx->rt_fntypes[].
  */
-LLVMValueRef
+llvm::Value *
 upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
-				 LLVMValueRef *args, unsigned count)
+				 llvm::Value **args, unsigned count)
 {
-	Assert(rt_func_idx >= 0 && rt_func_idx < ctx->num_rt_funcs);
+	Assert(rt_func_idx >= 0 &&
+		   (size_t) rt_func_idx < ctx->rt_funcs.size());
 
-	return LLVMBuildCall2(ctx->builder,
-						  ctx->rt_fntypes[rt_func_idx],
-						  ctx->rt_funcs[rt_func_idx],
-						  args, count, "");
+	return ctx->builder->CreateCall(ctx->rt_funcs[rt_func_idx],
+									llvm::ArrayRef<llvm::Value *>(args, count),
+									"");
 }
 
 /*
@@ -275,32 +277,34 @@ upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
  *
  * The function type is constructed from the argument types and ret_type.
  */
-LLVMValueRef
+llvm::Value *
 upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
-					 LLVMTypeRef ret_type,
-					 LLVMValueRef *args, unsigned count)
+					 llvm::Type *ret_type,
+					 llvm::Value **args, unsigned count)
 {
-	LLVMTypeRef		param_types[8];
-	LLVMTypeRef		fn_type;
-	LLVMValueRef	fn_ptr;
-	unsigned		i;
-	const char	   *call_name;
+	llvm::Type		   *param_types[8];
+	llvm::FunctionType *fn_type;
+	llvm::Value		   *fn_ptr;
+	unsigned			i;
+	const char		   *call_name;
 
 	Assert(count <= 8);
 
 	for (i = 0; i < count; i++)
-		param_types[i] = LLVMTypeOf(args[i]);
+		param_types[i] = args[i]->getType();
 
-	fn_type = LLVMFunctionType(ret_type, param_types, count, false);
-	fn_ptr = LLVMConstIntToPtr(
-		LLVMConstInt(ctx->types[UPL_INT64], (uintptr_t) fn_addr, false),
-		LLVMPointerType(fn_type, 0));
+	fn_type = llvm::FunctionType::get(ret_type,
+									  llvm::ArrayRef<llvm::Type *>(param_types,
+																   count),
+									  false);
+	fn_ptr = upl_const_ptr(ctx, fn_addr);
 
 	/* Use empty name for void returns, "ret" for value-producing calls */
 	call_name = (ret_type == ctx->types[UPL_VOID]) ? "" : "ret";
 
-	return LLVMBuildCall2(ctx->builder, fn_type, fn_ptr,
-						  args, count, call_name);
+	return ctx->builder->CreateCall(llvm::FunctionCallee(fn_type, fn_ptr),
+									llvm::ArrayRef<llvm::Value *>(args, count),
+									call_name);
 }
 
 
@@ -313,12 +317,12 @@ upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
  * Try to compile a boolean expression natively via the driver callback.
  * On failure, fall back to the runtime helper at callbacks.rt_eval_bool.
  *
- * Returns an LLVMValueRef of type i1.
+ * Returns an llvm::Value* of type i1.
  */
-static LLVMValueRef
+static llvm::Value *
 upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr)
 {
-	LLVMValueRef result;
+	llvm::Value *result;
 
 	/* Try native (Tier 1/2) compilation first */
 	if (ctx->callbacks.try_compile_bool != NULL &&
@@ -328,7 +332,7 @@ upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr)
 	/* Fall back to runtime helper */
 	Assert(ctx->callbacks.rt_eval_bool >= 0);
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_ptr(ctx, cond_expr)
 		};
@@ -362,10 +366,10 @@ upl_emit_if(UPL_compile_ctx *ctx,
 			void **elsif_bodies,
 			void *else_stmts)
 {
-	LLVMBasicBlockRef	then_bb;
-	LLVMBasicBlockRef	else_bb;
-	LLVMBasicBlockRef	merge_bb;
-	LLVMValueRef		cond;
+	llvm::BasicBlock   *then_bb;
+	llvm::BasicBlock   *else_bb;
+	llvm::BasicBlock   *merge_bb;
+	llvm::Value		   *cond;
 	int					i;
 
 	merge_bb = upl_append_block(ctx, "if.merge");
@@ -376,44 +380,44 @@ upl_emit_if(UPL_compile_ctx *ctx,
 	then_bb = upl_append_block(ctx, "if.then");
 	else_bb = upl_append_block(ctx, "if.else");
 
-	LLVMBuildCondBr(ctx->builder, cond, then_bb, else_bb);
+	ctx->builder->CreateCondBr(cond, then_bb, else_bb);
 
 	/* Then block */
-	LLVMPositionBuilderAtEnd(ctx->builder, then_bb);
+	ctx->builder->SetInsertPoint(then_bb);
 	ctx->callbacks.compile_stmts(ctx, then_stmts);
-	LLVMBuildBr(ctx->builder, merge_bb);
+	ctx->builder->CreateBr(merge_bb);
 
 	/* Else/elsif chain */
-	LLVMPositionBuilderAtEnd(ctx->builder, else_bb);
+	ctx->builder->SetInsertPoint(else_bb);
 
 	for (i = 0; i < num_elsifs; i++)
 	{
-		LLVMBasicBlockRef	elsif_then;
-		LLVMBasicBlockRef	elsif_else;
-		LLVMValueRef		elsif_cond;
+		llvm::BasicBlock   *elsif_then;
+		llvm::BasicBlock   *elsif_else;
+		llvm::Value		   *elsif_cond;
 
 		elsif_cond = upl_eval_bool(ctx, elsif_conds[i]);
 
 		elsif_then = upl_append_block(ctx, "elsif.then");
 		elsif_else = upl_append_block(ctx, "elsif.else");
 
-		LLVMBuildCondBr(ctx->builder, elsif_cond, elsif_then, elsif_else);
+		ctx->builder->CreateCondBr(elsif_cond, elsif_then, elsif_else);
 
-		LLVMPositionBuilderAtEnd(ctx->builder, elsif_then);
+		ctx->builder->SetInsertPoint(elsif_then);
 		ctx->callbacks.compile_stmts(ctx, elsif_bodies[i]);
-		LLVMBuildBr(ctx->builder, merge_bb);
+		ctx->builder->CreateBr(merge_bb);
 
-		LLVMPositionBuilderAtEnd(ctx->builder, elsif_else);
+		ctx->builder->SetInsertPoint(elsif_else);
 	}
 
 	/* ELSE body or fall through */
 	if (else_stmts != NULL)
 		ctx->callbacks.compile_stmts(ctx, else_stmts);
 
-	LLVMBuildBr(ctx->builder, merge_bb);
+	ctx->builder->CreateBr(merge_bb);
 
 	/* Continue after merge */
-	LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+	ctx->builder->SetInsertPoint(merge_bb);
 }
 
 /*
@@ -427,10 +431,10 @@ upl_emit_cond_loop(UPL_compile_ctx *ctx, const char *label,
 				   void *cond_expr, bool test_at_top,
 				   void *body_stmts)
 {
-	LLVMBasicBlockRef	cond_bb;
-	LLVMBasicBlockRef	body_bb;
-	LLVMBasicBlockRef	exit_bb;
-	LLVMValueRef		cond;
+	llvm::BasicBlock   *cond_bb;
+	llvm::BasicBlock   *body_bb;
+	llvm::BasicBlock   *exit_bb;
+	llvm::Value		   *cond;
 
 	cond_bb = upl_append_block(ctx, test_at_top ? "while.cond" : "repeat.cond");
 	body_bb = upl_append_block(ctx, test_at_top ? "while.body" : "repeat.body");
@@ -439,46 +443,46 @@ upl_emit_cond_loop(UPL_compile_ctx *ctx, const char *label,
 	if (test_at_top)
 	{
 		/* WHILE: branch to condition first */
-		LLVMBuildBr(ctx->builder, cond_bb);
+		ctx->builder->CreateBr(cond_bb);
 
 		/* Condition block */
-		LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
+		ctx->builder->SetInsertPoint(cond_bb);
 		cond = upl_eval_bool(ctx, cond_expr);
-		LLVMBuildCondBr(ctx->builder, cond, body_bb, exit_bb);
+		ctx->builder->CreateCondBr(cond, body_bb, exit_bb);
 
 		/* Body block */
-		LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+		ctx->builder->SetInsertPoint(body_bb);
 
 		upl_push_loop(ctx, label, cond_bb, exit_bb);
 		ctx->callbacks.compile_stmts(ctx, body_stmts);
 		upl_pop_loop(ctx);
 
 		/* Loop back to condition */
-		LLVMBuildBr(ctx->builder, cond_bb);
+		ctx->builder->CreateBr(cond_bb);
 	}
 	else
 	{
 		/* REPEAT UNTIL: branch to body first */
-		LLVMBuildBr(ctx->builder, body_bb);
+		ctx->builder->CreateBr(body_bb);
 
 		/* Body block */
-		LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+		ctx->builder->SetInsertPoint(body_bb);
 
 		upl_push_loop(ctx, label, cond_bb, exit_bb);
 		ctx->callbacks.compile_stmts(ctx, body_stmts);
 		upl_pop_loop(ctx);
 
 		/* Fall through to condition */
-		LLVMBuildBr(ctx->builder, cond_bb);
+		ctx->builder->CreateBr(cond_bb);
 
 		/* Condition block: exit if condition is true (UNTIL semantics) */
-		LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
+		ctx->builder->SetInsertPoint(cond_bb);
 		cond = upl_eval_bool(ctx, cond_expr);
-		LLVMBuildCondBr(ctx->builder, cond, exit_bb, body_bb);
+		ctx->builder->CreateCondBr(cond, exit_bb, body_bb);
 	}
 
 	/* Continue after loop */
-	LLVMPositionBuilderAtEnd(ctx->builder, exit_bb);
+	ctx->builder->SetInsertPoint(exit_bb);
 }
 
 /*
@@ -491,27 +495,27 @@ void
 upl_emit_loop(UPL_compile_ctx *ctx, const char *label,
 			  void *body_stmts)
 {
-	LLVMBasicBlockRef	body_bb;
-	LLVMBasicBlockRef	exit_bb;
+	llvm::BasicBlock   *body_bb;
+	llvm::BasicBlock   *exit_bb;
 
 	body_bb = upl_append_block(ctx, "loop.body");
 	exit_bb = upl_append_block(ctx, "loop.exit");
 
 	/* Branch to body */
-	LLVMBuildBr(ctx->builder, body_bb);
+	ctx->builder->CreateBr(body_bb);
 
 	/* Body block */
-	LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+	ctx->builder->SetInsertPoint(body_bb);
 
 	upl_push_loop(ctx, label, body_bb, exit_bb);
 	ctx->callbacks.compile_stmts(ctx, body_stmts);
 	upl_pop_loop(ctx);
 
 	/* Loop back */
-	LLVMBuildBr(ctx->builder, body_bb);
+	ctx->builder->CreateBr(body_bb);
 
 	/* Continue after loop */
-	LLVMPositionBuilderAtEnd(ctx->builder, exit_bb);
+	ctx->builder->SetInsertPoint(exit_bb);
 }
 
 /*
@@ -533,14 +537,14 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 			  void *step_expr, bool reverse,
 			  void *body_stmts)
 {
-	LLVMValueRef		lower, upper, step;
-	LLVMValueRef		loop_val_ptr, found_ptr;
-	LLVMValueRef		cur_val, next_val, done, overflow, found_val;
-	LLVMBasicBlockRef	cond_bb, body_bb, step_bb, exit_bb, store_bb;
+	llvm::Value		   *lower, *upper, *step;
+	llvm::Value		   *loop_val_ptr, *found_ptr;
+	llvm::Value		   *cur_val, *next_val, *done, *overflow, *found_val;
+	llvm::BasicBlock   *cond_bb, *body_bb, *step_bb, *exit_bb, *store_bb;
 
 	/* Evaluate lower bound */
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_ptr(ctx, lower_expr)
 		};
@@ -549,7 +553,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 
 	/* Evaluate upper bound */
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_ptr(ctx, upper_expr)
 		};
@@ -559,7 +563,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 	/* Evaluate step (default 1) */
 	if (step_expr)
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_ptr(ctx, step_expr)
 		};
@@ -579,59 +583,53 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 	 * llvmjit does the same).
 	 */
 	{
-		LLVMBasicBlockRef	saved_bb = LLVMGetInsertBlock(ctx->builder);
-		LLVMValueRef		first_instr;
+		llvm::BasicBlock   *saved_bb = ctx->builder->GetInsertBlock();
 
-		first_instr = LLVMGetFirstInstruction(ctx->entry_bb);
-		if (first_instr)
-			LLVMPositionBuilderBefore(ctx->builder, first_instr);
-		else
-			LLVMPositionBuilderAtEnd(ctx->builder, ctx->entry_bb);
+		/* Position before the entry block's first instruction (or at end) */
+		ctx->builder->SetInsertPoint(ctx->entry_bb, ctx->entry_bb->begin());
 
-		loop_val_ptr = LLVMBuildAlloca(ctx->builder, ctx->types[UPL_INT32],
-									   "loop_val");
-		found_ptr = LLVMBuildAlloca(ctx->builder, ctx->types[UPL_INT1],
-									"found");
+		loop_val_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32],
+												  nullptr, "loop_val");
+		found_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT1],
+											   nullptr, "found");
 
-		LLVMPositionBuilderAtEnd(ctx->builder, saved_bb);
+		ctx->builder->SetInsertPoint(saved_bb);
 	}
 
 	/* Initialise them where the loop actually starts */
-	LLVMBuildStore(ctx->builder, lower, loop_val_ptr);
-	LLVMBuildStore(ctx->builder,
-				   LLVMConstInt(ctx->types[UPL_INT1], 0, false), found_ptr);
+	ctx->builder->CreateStore(lower, loop_val_ptr);
+	ctx->builder->CreateStore(
+		llvm::ConstantInt::get(ctx->types[UPL_INT1], 0, false), found_ptr);
 
 	cond_bb  = upl_append_block(ctx, "fori.cond");
 	body_bb  = upl_append_block(ctx, "fori.body");
 	step_bb  = upl_append_block(ctx, "fori.step");
 	exit_bb  = upl_append_block(ctx, "fori.exit");
 
-	LLVMBuildBr(ctx->builder, cond_bb);
+	ctx->builder->CreateBr(cond_bb);
 
 	/* --- Condition block: check loop_val vs upper --- */
-	LLVMPositionBuilderAtEnd(ctx->builder, cond_bb);
-	cur_val = LLVMBuildLoad2(ctx->builder, ctx->types[UPL_INT32],
-							 loop_val_ptr, "cur");
+	ctx->builder->SetInsertPoint(cond_bb);
+	cur_val = ctx->builder->CreateLoad(ctx->types[UPL_INT32],
+									   loop_val_ptr, "cur");
 
 	if (reverse)
-		done = LLVMBuildICmp(ctx->builder, LLVMIntSLT, cur_val, upper,
-							 "done");
+		done = ctx->builder->CreateICmpSLT(cur_val, upper, "done");
 	else
-		done = LLVMBuildICmp(ctx->builder, LLVMIntSGT, cur_val, upper,
-							 "done");
+		done = ctx->builder->CreateICmpSGT(cur_val, upper, "done");
 
-	LLVMBuildCondBr(ctx->builder, done, exit_bb, body_bb);
+	ctx->builder->CreateCondBr(done, exit_bb, body_bb);
 
 	/* --- Body block --- */
-	LLVMPositionBuilderAtEnd(ctx->builder, body_bb);
+	ctx->builder->SetInsertPoint(body_bb);
 
 	/* Set found = true */
-	LLVMBuildStore(ctx->builder,
-				   LLVMConstInt(ctx->types[UPL_INT1], 1, false), found_ptr);
+	ctx->builder->CreateStore(
+		llvm::ConstantInt::get(ctx->types[UPL_INT1], 1, false), found_ptr);
 
 	/* Assign current value to loop variable via runtime helper */
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_int32(ctx, var_dno),
 			cur_val
@@ -648,43 +646,41 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 	upl_pop_loop(ctx);
 
 	/* Fall through to step */
-	LLVMBuildBr(ctx->builder, step_bb);
+	ctx->builder->CreateBr(step_bb);
 
 	/* --- Step block: increment/decrement with overflow check --- */
-	LLVMPositionBuilderAtEnd(ctx->builder, step_bb);
-	cur_val = LLVMBuildLoad2(ctx->builder, ctx->types[UPL_INT32],
-							 loop_val_ptr, "cur2");
+	ctx->builder->SetInsertPoint(step_bb);
+	cur_val = ctx->builder->CreateLoad(ctx->types[UPL_INT32],
+									   loop_val_ptr, "cur2");
 
 	store_bb = upl_append_block(ctx, "fori.store");
 
 	if (reverse)
 	{
-		next_val = LLVMBuildSub(ctx->builder, cur_val, step, "next");
+		next_val = ctx->builder->CreateSub(cur_val, step, "next");
 		/* Overflow if next > cur (underflow in reverse) */
-		overflow = LLVMBuildICmp(ctx->builder, LLVMIntSGT, next_val,
-								cur_val, "overflow");
+		overflow = ctx->builder->CreateICmpSGT(next_val, cur_val, "overflow");
 	}
 	else
 	{
-		next_val = LLVMBuildAdd(ctx->builder, cur_val, step, "next");
+		next_val = ctx->builder->CreateAdd(cur_val, step, "next");
 		/* Overflow if next < cur */
-		overflow = LLVMBuildICmp(ctx->builder, LLVMIntSLT, next_val,
-								cur_val, "overflow");
+		overflow = ctx->builder->CreateICmpSLT(next_val, cur_val, "overflow");
 	}
 
-	LLVMBuildCondBr(ctx->builder, overflow, exit_bb, store_bb);
+	ctx->builder->CreateCondBr(overflow, exit_bb, store_bb);
 
 	/* Store block: save next value, loop back */
-	LLVMPositionBuilderAtEnd(ctx->builder, store_bb);
-	LLVMBuildStore(ctx->builder, next_val, loop_val_ptr);
-	LLVMBuildBr(ctx->builder, cond_bb);
+	ctx->builder->SetInsertPoint(store_bb);
+	ctx->builder->CreateStore(next_val, loop_val_ptr);
+	ctx->builder->CreateBr(cond_bb);
 
 	/* --- Exit block: set FOUND and continue --- */
-	LLVMPositionBuilderAtEnd(ctx->builder, exit_bb);
-	found_val = LLVMBuildLoad2(ctx->builder, ctx->types[UPL_INT1],
-							   found_ptr, "found_val");
+	ctx->builder->SetInsertPoint(exit_bb);
+	found_val = ctx->builder->CreateLoad(ctx->types[UPL_INT1],
+										 found_ptr, "found_val");
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			found_val
 		};
@@ -705,7 +701,7 @@ upl_emit_loop_exit(UPL_compile_ctx *ctx, const char *label,
 				   bool is_exit, void *cond_expr)
 {
 	UPL_loop_info	   *loop;
-	LLVMBasicBlockRef	target_bb;
+	llvm::BasicBlock   *target_bb;
 
 	/* Find the target loop */
 	loop = upl_find_loop(ctx, label);
@@ -746,47 +742,47 @@ upl_emit_loop_exit(UPL_compile_ctx *ctx, const char *label,
 	if (cond_expr)
 	{
 		/* Conditional EXIT/CONTINUE */
-		LLVMBasicBlockRef	skip_bb;
-		LLVMValueRef		cond;
+		llvm::BasicBlock   *skip_bb;
+		llvm::Value		   *cond;
 
 		skip_bb = upl_append_block(ctx, is_exit ? "exit.skip" : "continue.skip");
 
 		cond = upl_eval_bool(ctx, cond_expr);
 
-		if (loop->cleanup_depth < ctx->cleanup_depth)
+		if (loop->cleanup_depth < (int) ctx->cleanup_stack.size())
 		{
 			/*
 			 * The cleanups must only run when the branch is taken, so the
 			 * release calls need a block of their own on the taken edge.
 			 */
-			LLVMBasicBlockRef unwind_bb;
+			llvm::BasicBlock *unwind_bb;
 
 			unwind_bb = upl_append_block(ctx,
 										 is_exit ? "exit.unwind"
 												 : "continue.unwind");
-			LLVMBuildCondBr(ctx->builder, cond, unwind_bb, skip_bb);
+			ctx->builder->CreateCondBr(cond, unwind_bb, skip_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, unwind_bb);
+			ctx->builder->SetInsertPoint(unwind_bb);
 			upl_emit_cleanup_unwind(ctx, loop->cleanup_depth);
-			LLVMBuildBr(ctx->builder, target_bb);
+			ctx->builder->CreateBr(target_bb);
 		}
 		else
-			LLVMBuildCondBr(ctx->builder, cond, target_bb, skip_bb);
+			ctx->builder->CreateCondBr(cond, target_bb, skip_bb);
 
 		/* Continue compilation after the skip */
-		LLVMPositionBuilderAtEnd(ctx->builder, skip_bb);
+		ctx->builder->SetInsertPoint(skip_bb);
 	}
 	else
 	{
 		/* Unconditional EXIT/CONTINUE */
 		upl_emit_cleanup_unwind(ctx, loop->cleanup_depth);
-		LLVMBuildBr(ctx->builder, target_bb);
+		ctx->builder->CreateBr(target_bb);
 
 		/* Dead block for any statements after unconditional EXIT/CONTINUE */
 		{
-			LLVMBasicBlockRef dead_bb = upl_append_block(ctx, "exit.dead");
+			llvm::BasicBlock *dead_bb = upl_append_block(ctx, "exit.dead");
 
-			LLVMPositionBuilderAtEnd(ctx->builder, dead_bb);
+			ctx->builder->SetInsertPoint(dead_bb);
 		}
 	}
 }
@@ -814,7 +810,7 @@ upl_emit_case(UPL_compile_ctx *ctx,
 			  bool has_else, void *else_body,
 			  int lineno)
 {
-	LLVMBasicBlockRef	merge_bb;
+	llvm::BasicBlock   *merge_bb;
 	int					i;
 
 	merge_bb = upl_append_block(ctx, "case.merge");
@@ -829,9 +825,9 @@ upl_emit_case(UPL_compile_ctx *ctx,
 	/* Evaluate each WHEN clause as a conditional branch chain */
 	for (i = 0; i < num_whens; i++)
 	{
-		LLVMBasicBlockRef	when_then_bb;
-		LLVMBasicBlockRef	when_else_bb;
-		LLVMValueRef		cond;
+		llvm::BasicBlock   *when_then_bb;
+		llvm::BasicBlock   *when_else_bb;
+		llvm::Value		   *cond;
 
 		/*
 		 * A simple CASE's WHEN conditions read the test temporary, whose type
@@ -846,15 +842,15 @@ upl_emit_case(UPL_compile_ctx *ctx,
 		when_then_bb = upl_append_block(ctx, "case.when.then");
 		when_else_bb = upl_append_block(ctx, "case.when.else");
 
-		LLVMBuildCondBr(ctx->builder, cond, when_then_bb, when_else_bb);
+		ctx->builder->CreateCondBr(cond, when_then_bb, when_else_bb);
 
 		/* WHEN body */
-		LLVMPositionBuilderAtEnd(ctx->builder, when_then_bb);
+		ctx->builder->SetInsertPoint(when_then_bb);
 
 		/* Clear temp variable before executing body */
 		if (has_test_expr)
 		{
-			LLVMValueRef args[] = {
+			llvm::Value *args[] = {
 				ctx->estate_ref,
 				upl_const_int32(ctx, test_varno)
 			};
@@ -862,16 +858,16 @@ upl_emit_case(UPL_compile_ctx *ctx,
 		}
 
 		ctx->callbacks.compile_stmts(ctx, when_bodies[i]);
-		LLVMBuildBr(ctx->builder, merge_bb);
+		ctx->builder->CreateBr(merge_bb);
 
 		/* Continue to next WHEN */
-		LLVMPositionBuilderAtEnd(ctx->builder, when_else_bb);
+		ctx->builder->SetInsertPoint(when_else_bb);
 	}
 
 	/* Clear temp variable in the fallthrough path too */
 	if (has_test_expr)
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_int32(ctx, test_varno)
 		};
@@ -886,17 +882,17 @@ upl_emit_case(UPL_compile_ctx *ctx,
 	else
 	{
 		/* SQL2003: CASE without ELSE and no match is an error */
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_int32(ctx, lineno)
 		};
 		upl_emit_rt_call(ctx, ctx->callbacks.rt_case_error, args, 2);
 	}
 
-	LLVMBuildBr(ctx->builder, merge_bb);
+	ctx->builder->CreateBr(merge_bb);
 
 	/* Continue after CASE */
-	LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+	ctx->builder->SetInsertPoint(merge_bb);
 }
 
 /*
@@ -909,11 +905,11 @@ upl_emit_case(UPL_compile_ctx *ctx,
 void
 upl_emit_return(UPL_compile_ctx *ctx, int rt_exec_return, void *stmt)
 {
-	LLVMValueRef rc;
+	llvm::Value *rc;
 
 	/* Call rt_exec_return(estate, stmt) */
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_ptr(ctx, stmt)
 		};
@@ -922,19 +918,19 @@ upl_emit_return(UPL_compile_ctx *ctx, int rt_exec_return, void *stmt)
 	}
 
 	/* Store the return code */
-	LLVMBuildStore(ctx->builder, rc, ctx->rc_ptr);
+	ctx->builder->CreateStore(rc, ctx->rc_ptr);
 
 	/* Branch to return block */
-	LLVMBuildBr(ctx->builder, ctx->return_bb);
+	ctx->builder->CreateBr(ctx->return_bb);
 
 	/*
 	 * Create a dead block for any statements after RETURN.
 	 * LLVM requires the builder to be positioned at a valid block.
 	 */
 	{
-		LLVMBasicBlockRef dead_bb = upl_append_block(ctx, "dead");
+		llvm::BasicBlock *dead_bb = upl_append_block(ctx, "dead");
 
-		LLVMPositionBuilderAtEnd(ctx->builder, dead_bb);
+		ctx->builder->SetInsertPoint(dead_bb);
 	}
 }
 
@@ -993,7 +989,7 @@ upl_emit_block(UPL_compile_ctx *ctx,
 	/* No exceptions: initialize variables and compile body */
 	for (i = 0; i < n_initvars; i++)
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			ctx->estate_ref,
 			upl_const_int32(ctx, initvarnos[i])
 		};
@@ -1035,8 +1031,8 @@ void *
 upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 {
 	char			func_name[NAMEDATALEN + 32];
-	LLVMValueRef	estate_ref;
-	LLVMValueRef	rc_val;
+	llvm::Value	   *estate_ref;
+	llvm::Value	   *rc_val;
 	void		   *fn_ptr = NULL;
 
 	/*
@@ -1048,13 +1044,15 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 			 hooks->func_name_prefix, hooks->fn_oid, compile_gen++);
 
 	/* 1. Create LLVM context, module, builder */
-	ctx->context = LLVMContextCreate();
-	ctx->module = LLVMModuleCreateWithNameInContext(func_name, ctx->context);
-	ctx->builder = LLVMCreateBuilderInContext(ctx->context);
+	ctx->context = std::make_unique<llvm::LLVMContext>();
+	ctx->module = std::make_unique<llvm::Module>(func_name, *ctx->context);
+	ctx->builder = std::make_unique<llvm::IRBuilder<>>(*ctx->context);
 
 	/*
 	 * Wrap the rest of compilation in PG_TRY so that LLVM resources are
-	 * cleaned up if any step raises an error (elog(ERROR)).
+	 * cleaned up if any step raises an error (elog(ERROR)).  The longjmp
+	 * does not run destructors, so the unique_ptrs must be reset by hand
+	 * in PG_CATCH (see doc/cpp-rewrite.md).
 	 */
 	PG_TRY();
 	{
@@ -1065,47 +1063,48 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 		hooks->register_rt_funcs(ctx);
 
 		/* 4. Create the LLVM function: int32 func(ptr estate) */
-		ctx->function = LLVMAddFunction(ctx->module, func_name,
-										ctx->types[UPL_FUNC_TYPE]);
+		ctx->function = llvm::Function::Create(
+			llvm::cast<llvm::FunctionType>(ctx->types[UPL_FUNC_TYPE]),
+			llvm::Function::ExternalLinkage, func_name, ctx->module.get());
 
 		/*
 		 * 5. Register sigsetjmp as an external function with returns_twice
 		 * attribute.  Signature: int sigsetjmp(ptr jmpbuf, int savesigs)
 		 */
 		{
-			LLVMTypeRef sjparams[] = { ctx->types[UPL_PTR],
+			llvm::Type *sjparams[] = { ctx->types[UPL_PTR],
 									   ctx->types[UPL_INT32] };
-			LLVMTypeRef sjft = LLVMFunctionType(ctx->types[UPL_INT32],
-												sjparams, 2, false);
-			LLVMValueRef sjfn;
-			unsigned kind;
-			LLVMAttributeRef attr;
+			llvm::FunctionType *sjft =
+				llvm::FunctionType::get(ctx->types[UPL_INT32],
+										sjparams, false);
+			llvm::Function *sjfn;
 
 			ctx->sigsetjmp_fntype = sjft;
-			sjfn = LLVMAddFunction(ctx->module, UPL_SIGSETJMP_SYM, sjft);
+			sjfn = llvm::Function::Create(sjft,
+										  llvm::Function::ExternalLinkage,
+										  UPL_SIGSETJMP_SYM,
+										  ctx->module.get());
 			ctx->sigsetjmp_fn = sjfn;
 
 			/* Mark as returns_twice -- critical for correct codegen */
-			kind = LLVMGetEnumAttributeKindForName("returns_twice", 13);
-			attr = LLVMCreateEnumAttribute(ctx->context, kind, 0);
-			LLVMAddAttributeAtIndex(sjfn, LLVMAttributeFunctionIndex, attr);
+			sjfn->addFnAttr(llvm::Attribute::ReturnsTwice);
 		}
 
 		/* 6. Create entry and return blocks */
 		ctx->entry_bb = upl_append_block(ctx, "entry");
 		ctx->return_bb = upl_append_block(ctx, "return");
 
-		LLVMPositionBuilderAtEnd(ctx->builder, ctx->entry_bb);
+		ctx->builder->SetInsertPoint(ctx->entry_bb);
 
 		/* 7. Allocate return code storage, store default */
-		ctx->rc_ptr = LLVMBuildAlloca(ctx->builder, ctx->types[UPL_INT32],
-									  "rc");
-		LLVMBuildStore(ctx->builder,
-					   upl_const_int32(ctx, hooks->default_rc), ctx->rc_ptr);
+		ctx->rc_ptr = ctx->builder->CreateAlloca(ctx->types[UPL_INT32],
+												 nullptr, "rc");
+		ctx->builder->CreateStore(upl_const_int32(ctx, hooks->default_rc),
+								  ctx->rc_ptr);
 
 		/* 8. Get estate parameter (first arg) */
-		estate_ref = LLVMGetParam(ctx->function, 0);
-		LLVMSetValueName(estate_ref, "estate");
+		estate_ref = ctx->function->getArg(0);
+		estate_ref->setName("estate");
 		ctx->estate_ref = estate_ref;
 
 		/* 9. Driver-specific entry setup (load plstate, allocas, etc.) */
@@ -1115,13 +1114,13 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 		hooks->compile_body(ctx);
 
 		/* 11. Fall through to return block */
-		LLVMBuildBr(ctx->builder, ctx->return_bb);
+		ctx->builder->CreateBr(ctx->return_bb);
 
 		/* 12. Return block: load rc and return */
-		LLVMPositionBuilderAtEnd(ctx->builder, ctx->return_bb);
-		rc_val = LLVMBuildLoad2(ctx->builder, ctx->types[UPL_INT32],
-								ctx->rc_ptr, "rc_val");
-		LLVMBuildRet(ctx->builder, rc_val);
+		ctx->builder->SetInsertPoint(ctx->return_bb);
+		rc_val = ctx->builder->CreateLoad(ctx->types[UPL_INT32],
+										  ctx->rc_ptr, "rc_val");
+		ctx->builder->CreateRet(rc_val);
 
 		/*
 		 * 13. Add nounwind only if no exception blocks were compiled.
@@ -1129,59 +1128,45 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 		 * nounwind, or LLVM may misoptimize around the setjmp point.
 		 */
 		if (!ctx->has_exceptions)
-		{
-			unsigned kind = LLVMGetEnumAttributeKindForName("nounwind", 8);
-			LLVMAttributeRef attr = LLVMCreateEnumAttribute(ctx->context,
-															 kind, 0);
-
-			LLVMAddAttributeAtIndex(ctx->function,
-									LLVMAttributeFunctionIndex, attr);
-		}
+			ctx->function->addFnAttr(llvm::Attribute::NoUnwind);
 
 		/* 14. Verify the module */
-		upl_verify_module(ctx->module);
+		upl_verify_module(*ctx->module);
 
 		/* 14a. Optionally dump the IR (uplpgsql.dump_ir). */
 		if (hooks->dump_ir)
 		{
-			char *ir = LLVMPrintModuleToString(ctx->module);
+			std::string irstr;
+			llvm::raw_string_ostream os(irstr);
 
-			elog(LOG, "upl: IR for %s:\n%s", func_name, ir);
-			LLVMDisposeMessage(ir);
+			ctx->module->print(os, nullptr);
+			elog(LOG, "upl: IR for %s:\n%s", func_name,
+				 pstrdup(os.str().c_str()));
 		}
 
 		/* 15. Optimize */
-		upl_optimize_module(ctx->module, 3);
+		upl_optimize_module(*ctx->module, 3);
 
 		/*
 		 * 16. Compile via OrcJIT.
 		 *
-		 * upl_jit_compile() always disposes the module (via bitcode
-		 * serialization), so NULL ctx->module first to prevent the
-		 * PG_CATCH block from double-freeing it.
+		 * upl_jit_compile() takes ownership of the module and context by
+		 * move.  The builder references the context, so destroy it first.
 		 */
-		{
-			LLVMModuleRef mod = ctx->module;
-
-			ctx->module = NULL;		/* prevent double-free on error */
-			fn_ptr = upl_jit_compile(mod, ctx->context, func_name);
-		}
-
-		/* 17. Clean up builder and context */
-		LLVMDisposeBuilder(ctx->builder);
-		ctx->builder = NULL;
-		LLVMContextDispose(ctx->context);
-		ctx->context = NULL;
+		ctx->builder.reset();
+		fn_ptr = upl_jit_compile(std::move(ctx->module),
+								 std::move(ctx->context), func_name);
 	}
 	PG_CATCH();
 	{
-		/* Clean up LLVM resources on compilation failure */
-		if (ctx->builder)
-			LLVMDisposeBuilder(ctx->builder);
-		if (ctx->module)
-			LLVMDisposeModule(ctx->module);
-		if (ctx->context)
-			LLVMContextDispose(ctx->context);
+		/*
+		 * Clean up LLVM resources on compilation failure.  elog's longjmp
+		 * does not run destructors, so reset the owning pointers by hand,
+		 * builder first (it references the context).
+		 */
+		ctx->builder.reset();
+		ctx->module.reset();
+		ctx->context.reset();
 
 		PG_RE_THROW();
 	}

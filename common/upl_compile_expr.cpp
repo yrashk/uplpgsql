@@ -165,29 +165,29 @@ typedef enum ExprTypeClass
 static Expr *uplpgsql_prepare_and_get_expr(UPLpgSQL_compile_ctx *ctx,
 										   UPLpgSQL_expr *expr);
 static ExprTypeClass uplpgsql_classify_expr(Expr *expr);
-static LLVMValueRef uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx,
+static llvm::Value *uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx,
 												Expr *expr,
-												LLVMValueRef estate_ref,
+												llvm::Value *estate_ref,
 												ExprTypeClass *result_type);
-static LLVMValueRef uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx,
+static llvm::Value *uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx,
 											   Expr *expr,
-											   LLVMValueRef estate_ref);
+											   llvm::Value *estate_ref);
 
 /* Tier 2: fmgr bypass */
 static bool uplpgsql_can_fmgr_compile(Expr *expr);
-static LLVMValueRef uplpgsql_compile_expr_fmgr(UPLpgSQL_compile_ctx *ctx,
+static llvm::Value *uplpgsql_compile_expr_fmgr(UPLpgSQL_compile_ctx *ctx,
 											    Expr *expr,
-											    LLVMValueRef estate_ref);
-static LLVMValueRef uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx,
+											    llvm::Value *estate_ref);
+static llvm::Value *uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx,
 													 Expr *expr,
-													 LLVMValueRef estate_ref,
-													 LLVMValueRef *isnull_out);
+													 llvm::Value *estate_ref,
+													 llvm::Value **isnull_out);
 
 /* Helpers */
-static inline LLVMBasicBlockRef
+static inline llvm::BasicBlock *
 expr_append_block(UPLpgSQL_compile_ctx *ctx, const char *name)
 {
-	return LLVMAppendBasicBlockInContext(ctx->context, ctx->function, name);
+	return llvm::BasicBlock::Create(*ctx->context, name, ctx->function);
 }
 
 /*
@@ -216,11 +216,11 @@ find_native_array(UPLpgSQL_compile_ctx *ctx, int dno)
  */
 typedef struct ArrayTypeInfo
 {
-	LLVMValueRef	typlen_val;		/* i32: array type length (-1 for varlena) */
-	LLVMValueRef	elemtype_val;	/* i32: element type OID */
-	LLVMValueRef	elmlen_val;		/* i16: element length */
-	LLVMValueRef	elmbyval_val;	/* i1: element pass-by-value */
-	LLVMValueRef	elmalign_val;	/* i8: element alignment */
+	llvm::Value	*typlen_val;		/* i32: array type length (-1 for varlena) */
+	llvm::Value	*elemtype_val;	/* i32: element type OID */
+	llvm::Value	*elmlen_val;		/* i16: element length */
+	llvm::Value	*elmbyval_val;	/* i1: element pass-by-value */
+	llvm::Value	*elmalign_val;	/* i8: element alignment */
 } ArrayTypeInfo;
 
 static void
@@ -237,10 +237,8 @@ resolve_array_type_info(UPLpgSQL_compile_ctx *ctx, int array_dno,
 	elemtype = get_element_type(arrayvar->datatype->typoid);
 	get_typlenbyvalalign(elemtype, &elmlen, &elmbyval, &elmalign);
 
-	info->typlen_val = LLVMConstInt(ctx->types[UPLPGSQL_INT32],
-									arrayvar->datatype->typlen, true);
-	info->elemtype_val = LLVMConstInt(ctx->types[UPLPGSQL_INT32],
-									  elemtype, false);
+	info->typlen_val = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], arrayvar->datatype->typlen, true);
+	info->elemtype_val = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], elemtype, false);
 	/*
 	 * Emit elmlen as i32, not i16.  A varlena element type has elmlen == -1,
 	 * and a negative i16 argument passed to the runtime helper without a
@@ -248,12 +246,9 @@ resolve_array_type_info(UPLpgSQL_compile_ctx *ctx, int array_dno,
 	 * array_get_element rejects.  Widening to a full int sidesteps the ABI
 	 * ambiguity; fixed-length elements are unaffected either way.
 	 */
-	info->elmlen_val = LLVMConstInt(ctx->types[UPLPGSQL_INT32],
-									elmlen, true);
-	info->elmbyval_val = LLVMConstInt(ctx->types[UPLPGSQL_INT1],
-									  elmbyval ? 1 : 0, false);
-	info->elmalign_val = LLVMConstInt(ctx->types[UPLPGSQL_INT8],
-									  elmalign, false);
+	info->elmlen_val = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], elmlen, true);
+	info->elmbyval_val = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], elmbyval ? 1 : 0, false);
+	info->elmalign_val = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT8], elmalign, false);
 }
 
 
@@ -265,35 +260,35 @@ resolve_array_type_info(UPLpgSQL_compile_ctx *ctx, int array_dno,
 /*
  * Emit IR to load a variable's Datum (i64) via struct offset GEPs.
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_emit_load_var_datum(UPLpgSQL_compile_ctx *ctx,
-							LLVMValueRef estate_ref, int dno)
+							llvm::Value *estate_ref, int dno)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i8 = ctx->types[UPLPGSQL_INT8];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
-	LLVMTypeRef		ptr = ctx->types[UPLPGSQL_PTR];
-	LLVMValueRef	off, gep, plstate, datums, datum;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i8 = ctx->types[UPLPGSQL_INT8];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type		*ptr = ctx->types[UPLPGSQL_PTR];
+	llvm::Value	*off, *gep, *plstate, *datums, *datum;
 
 	/* estate->uplpgsql_estate */
-	off = LLVMConstInt(i64, OFF_ESTATE_PLSTATE, false);
-	gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1, "plstate.ptr");
-	plstate = LLVMBuildLoad2(builder, ptr, gep, "plstate");
+	off = llvm::ConstantInt::get(i64, OFF_ESTATE_PLSTATE, false);
+	gep = builder->CreateGEP(i8, estate_ref, {off}, "plstate.ptr");
+	plstate = builder->CreateLoad(ptr, gep, "plstate");
 
 	/* plstate->datums */
-	off = LLVMConstInt(i64, OFF_EXECSTATE_DATUMS, false);
-	gep = LLVMBuildGEP2(builder, i8, plstate, &off, 1, "datums.ptr");
-	datums = LLVMBuildLoad2(builder, ptr, gep, "datums");
+	off = llvm::ConstantInt::get(i64, OFF_EXECSTATE_DATUMS, false);
+	gep = builder->CreateGEP(i8, plstate, {off}, "datums.ptr");
+	datums = builder->CreateLoad(ptr, gep, "datums");
 
 	/* datums[dno] */
-	off = LLVMConstInt(i64, dno, false);
-	gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, "datum.slot");
-	datum = LLVMBuildLoad2(builder, ptr, gep, "datum");
+	off = llvm::ConstantInt::get(i64, dno, false);
+	gep = builder->CreateGEP(ptr, datums, {off}, "datum.slot");
+	datum = builder->CreateLoad(ptr, gep, "datum");
 
 	/* datum->value */
-	off = LLVMConstInt(i64, OFF_VAR_VALUE, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "value.ptr");
-	return LLVMBuildLoad2(builder, i64, gep, "var.datum");
+	off = llvm::ConstantInt::get(i64, OFF_VAR_VALUE, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "value.ptr");
+	return builder->CreateLoad(i64, gep, "var.datum");
 }
 
 /*
@@ -306,9 +301,9 @@ uplpgsql_emit_load_var_datum(UPLpgSQL_compile_ctx *ctx,
  * compile time and emit inline LLVM IR to GEP directly into
  * erh->dvalues[fnumber-1], with a slow-path fallback to RT_GET_RECFIELD.
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_emit_load_param_datum(UPLpgSQL_compile_ctx *ctx,
-							   LLVMValueRef estate_ref, int dno)
+							   llvm::Value *estate_ref, int dno)
 {
 	UPLpgSQL_datum *d = ctx_func(ctx)->datums[dno];
 	UPLpgSQL_native_array *na;
@@ -336,14 +331,11 @@ uplpgsql_emit_load_param_datum(UPLpgSQL_compile_ctx *ctx,
 	 */
 	if (d->dtype == UPLPGSQL_DTYPE_PROMISE)
 	{
-		LLVMValueRef args[] = {
+		llvm::Value *args[] = {
 			estate_ref,
-			LLVMConstInt(ctx->types[UPLPGSQL_INT32], dno, false)
+			llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], dno, false)
 		};
-		return LLVMBuildCall2(ctx->builder,
-							  ctx->rt_fntypes[RT_GET_RECFIELD],
-							  ctx->rt_funcs[RT_GET_RECFIELD],
-							  args, 2, "promise.datum");
+		return ctx->builder->CreateCall(ctx->rt_funcs[RT_GET_RECFIELD], args, "promise.datum");
 	}
 
 	if (d->dtype == UPLPGSQL_DTYPE_RECFIELD)
@@ -370,90 +362,81 @@ uplpgsql_emit_load_param_datum(UPLpgSQL_compile_ctx *ctx,
 											 recfield->fieldname,
 											 &finfo))
 			{
-				LLVMTypeRef i8 = ctx->types[UPLPGSQL_INT8];
-				LLVMTypeRef i32 = ctx->types[UPLPGSQL_INT32];
-				LLVMTypeRef i64 = ctx->types[UPLPGSQL_INT64];
-				LLVMTypeRef ptr = ctx->types[UPLPGSQL_PTR];
-				LLVMBuilderRef builder = ctx->builder;
-				LLVMValueRef off, gep, plstate, datums, datum;
-				LLVMValueRef erh_ptr, flags_val, dvalues_ptr, field_datum;
-				LLVMValueRef cond_erh, cond_flags, cond;
-				LLVMBasicBlockRef bb_fast, bb_slow, bb_merge;
-				LLVMValueRef phi;
+				llvm::Type *i8 = ctx->types[UPLPGSQL_INT8];
+				llvm::Type *i32 = ctx->types[UPLPGSQL_INT32];
+				llvm::Type *i64 = ctx->types[UPLPGSQL_INT64];
+				llvm::Type *ptr = ctx->types[UPLPGSQL_PTR];
+				llvm::IRBuilder<> *builder = ctx->builder.get();
+				llvm::Value *off, *gep, *plstate, *datums, *datum;
+				llvm::Value *erh_ptr, *flags_val, *dvalues_ptr, *field_datum;
+				llvm::Value *cond_erh, *cond_flags, *cond;
+				llvm::BasicBlock *bb_fast, *bb_slow, *bb_merge;
+				llvm::PHINode *phi;
 				int field_idx = finfo.fnumber - 1;  /* 0-based array index */
 
 				/* Navigate: estate → plstate → datums[rec_dno] → rec */
-				off = LLVMConstInt(i64, OFF_ESTATE_PLSTATE, false);
-				gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1, "rf.plstate.ptr");
-				plstate = LLVMBuildLoad2(builder, ptr, gep, "rf.plstate");
+				off = llvm::ConstantInt::get(i64, OFF_ESTATE_PLSTATE, false);
+				gep = builder->CreateGEP(i8, estate_ref, {off}, "rf.plstate.ptr");
+				plstate = builder->CreateLoad(ptr, gep, "rf.plstate");
 
-				off = LLVMConstInt(i64, OFF_EXECSTATE_DATUMS, false);
-				gep = LLVMBuildGEP2(builder, i8, plstate, &off, 1, "rf.datums.ptr");
-				datums = LLVMBuildLoad2(builder, ptr, gep, "rf.datums");
+				off = llvm::ConstantInt::get(i64, OFF_EXECSTATE_DATUMS, false);
+				gep = builder->CreateGEP(i8, plstate, {off}, "rf.datums.ptr");
+				datums = builder->CreateLoad(ptr, gep, "rf.datums");
 
-				off = LLVMConstInt(i64, recfield->recparentno, false);
-				gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, "rf.rec.slot");
-				datum = LLVMBuildLoad2(builder, ptr, gep, "rf.rec");
+				off = llvm::ConstantInt::get(i64, recfield->recparentno, false);
+				gep = builder->CreateGEP(ptr, datums, {off}, "rf.rec.slot");
+				datum = builder->CreateLoad(ptr, gep, "rf.rec");
 
 				/* Load erh = rec->erh */
-				off = LLVMConstInt(i64, OFF_REC_ERH, false);
-				gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "rf.erh.ptr");
-				erh_ptr = LLVMBuildLoad2(builder, ptr, gep, "rf.erh");
+				off = llvm::ConstantInt::get(i64, OFF_REC_ERH, false);
+				gep = builder->CreateGEP(i8, datum, {off}, "rf.erh.ptr");
+				erh_ptr = builder->CreateLoad(ptr, gep, "rf.erh");
 
 				/* Check erh != NULL */
-				cond_erh = LLVMBuildICmp(builder, LLVMIntNE, erh_ptr,
-					LLVMConstNull(ptr), "rf.erh.notnull");
+				cond_erh = builder->CreateICmpNE(erh_ptr, llvm::Constant::getNullValue(ptr), "rf.erh.notnull");
 
 				/* Check erh->flags & ER_FLAG_DVALUES_VALID (0x0004) */
-				off = LLVMConstInt(i64, OFF_ERH_FLAGS, false);
-				gep = LLVMBuildGEP2(builder, i8, erh_ptr, &off, 1, "rf.flags.ptr");
-				flags_val = LLVMBuildLoad2(builder, i32, gep, "rf.flags");
-				cond_flags = LLVMBuildICmp(builder, LLVMIntNE,
-					LLVMBuildAnd(builder, flags_val,
-						LLVMConstInt(i32, 0x0004, false), "rf.flags.masked"),
-					LLVMConstInt(i32, 0, false), "rf.dvalues.valid");
+				off = llvm::ConstantInt::get(i64, OFF_ERH_FLAGS, false);
+				gep = builder->CreateGEP(i8, erh_ptr, {off}, "rf.flags.ptr");
+				flags_val = builder->CreateLoad(i32, gep, "rf.flags");
+				cond_flags = builder->CreateICmpNE(builder->CreateAnd(flags_val, llvm::ConstantInt::get(i32, 0x0004, false), "rf.flags.masked"), llvm::ConstantInt::get(i32, 0, false), "rf.dvalues.valid");
 
-				cond = LLVMBuildAnd(builder, cond_erh, cond_flags, "rf.fast.ok");
+				cond = builder->CreateAnd(cond_erh, cond_flags, "rf.fast.ok");
 
 				/* Branch: fast inline path vs slow runtime call */
-				bb_fast = LLVMAppendBasicBlockInContext(ctx->context,
-					ctx->function, "rf.fast");
-				bb_slow = LLVMAppendBasicBlockInContext(ctx->context,
-					ctx->function, "rf.slow");
-				bb_merge = LLVMAppendBasicBlockInContext(ctx->context,
-					ctx->function, "rf.merge");
-				LLVMBuildCondBr(builder, cond, bb_fast, bb_slow);
+				bb_fast = llvm::BasicBlock::Create(*ctx->context, "rf.fast", ctx->function);
+				bb_slow = llvm::BasicBlock::Create(*ctx->context, "rf.slow", ctx->function);
+				bb_merge = llvm::BasicBlock::Create(*ctx->context, "rf.merge", ctx->function);
+				builder->CreateCondBr(cond, bb_fast, bb_slow);
 
 				/* Fast path: erh->dvalues[fnumber-1] */
-				LLVMPositionBuilderAtEnd(builder, bb_fast);
-				off = LLVMConstInt(i64, OFF_ERH_DVALUES, false);
-				gep = LLVMBuildGEP2(builder, i8, erh_ptr, &off, 1, "rf.dvalues.ptr");
-				dvalues_ptr = LLVMBuildLoad2(builder, ptr, gep, "rf.dvalues");
-				off = LLVMConstInt(i64, field_idx, false);
-				gep = LLVMBuildGEP2(builder, i64, dvalues_ptr, &off, 1, "rf.field.ptr");
-				field_datum = LLVMBuildLoad2(builder, i64, gep, "rf.field.datum");
-				LLVMBuildBr(builder, bb_merge);
+				builder->SetInsertPoint(bb_fast);
+				off = llvm::ConstantInt::get(i64, OFF_ERH_DVALUES, false);
+				gep = builder->CreateGEP(i8, erh_ptr, {off}, "rf.dvalues.ptr");
+				dvalues_ptr = builder->CreateLoad(ptr, gep, "rf.dvalues");
+				off = llvm::ConstantInt::get(i64, field_idx, false);
+				gep = builder->CreateGEP(i64, dvalues_ptr, {off}, "rf.field.ptr");
+				field_datum = builder->CreateLoad(i64, gep, "rf.field.datum");
+				builder->CreateBr(bb_merge);
 
 				/* Slow path: call RT_GET_RECFIELD */
-				LLVMPositionBuilderAtEnd(builder, bb_slow);
+				builder->SetInsertPoint(bb_slow);
 				{
-					LLVMValueRef slow_args[] = {
+					llvm::Value *slow_args[] = {
 						estate_ref,
-						LLVMConstInt(i32, dno, false)
+						llvm::ConstantInt::get(i32, dno, false)
 					};
-					LLVMValueRef slow_result = LLVMBuildCall2(builder,
-						ctx->rt_fntypes[RT_GET_RECFIELD],
-						ctx->rt_funcs[RT_GET_RECFIELD],
-						slow_args, 2, "rf.slow.datum");
-					LLVMBuildBr(builder, bb_merge);
+					llvm::Value *slow_result = builder->CreateCall(ctx->rt_funcs[RT_GET_RECFIELD], slow_args, "rf.slow.datum");
+					builder->CreateBr(bb_merge);
 
 					/* Merge with PHI */
-					LLVMPositionBuilderAtEnd(builder, bb_merge);
-					phi = LLVMBuildPhi(builder, i64, "rf.datum");
+					builder->SetInsertPoint(bb_merge);
+					phi = builder->CreatePHI(i64, 2, "rf.datum");
 					{
-						LLVMValueRef vals[] = { field_datum, slow_result };
-						LLVMBasicBlockRef bbs[] = { bb_fast, bb_slow };
-						LLVMAddIncoming(phi, vals, bbs, 2);
+						llvm::Value *vals[] = { field_datum, slow_result };
+						llvm::BasicBlock *bbs[] = { bb_fast, bb_slow };
+						phi->addIncoming(vals[0], bbs[0]);
+						phi->addIncoming(vals[1], bbs[1]);
 					}
 					return phi;
 				}
@@ -462,14 +445,11 @@ uplpgsql_emit_load_param_datum(UPLpgSQL_compile_ctx *ctx,
 
 		/* Slow path: call exec_eval_datum via RT_GET_RECFIELD */
 		{
-			LLVMValueRef args[] = {
+			llvm::Value *args[] = {
 				estate_ref,
-				LLVMConstInt(ctx->types[UPLPGSQL_INT32], dno, false)
+				llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], dno, false)
 			};
-			return LLVMBuildCall2(ctx->builder,
-								  ctx->rt_fntypes[RT_GET_RECFIELD],
-								  ctx->rt_funcs[RT_GET_RECFIELD],
-								  args, 2, "recfield.datum");
+			return ctx->builder->CreateCall(ctx->rt_funcs[RT_GET_RECFIELD], args, "recfield.datum");
 		}
 	}
 
@@ -481,18 +461,18 @@ uplpgsql_emit_load_param_datum(UPLpgSQL_compile_ctx *ctx,
  * conservatively return false (not-null) — matching the existing Tier 1
  * behavior of not null-checking variable loads.
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_emit_load_param_isnull(UPLpgSQL_compile_ctx *ctx,
-								LLVMValueRef estate_ref, int dno)
+								llvm::Value *estate_ref, int dno)
 {
 	UPLpgSQL_datum *d = ctx_func(ctx)->datums[dno];
-	LLVMBuilderRef builder = ctx->builder;
-	LLVMTypeRef i1 = ctx->types[UPLPGSQL_INT1];
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type *i1 = ctx->types[UPLPGSQL_INT1];
 	UPLpgSQL_native_array *na;
 
 	if (d->dtype == UPLPGSQL_DTYPE_RECFIELD ||
 		d->dtype == UPLPGSQL_DTYPE_PROMISE)
-		return LLVMConstInt(i1, 0, false);
+		return llvm::ConstantInt::get(i1, 0, false);
 
 	/*
 	 * A native array's variable carries a stale isnull — it is still the
@@ -507,27 +487,27 @@ uplpgsql_emit_load_param_isnull(UPLpgSQL_compile_ctx *ctx,
 
 	/* For plain vars: load datum->isnull */
 	{
-		LLVMTypeRef i8 = ctx->types[UPLPGSQL_INT8];
-		LLVMTypeRef i64 = ctx->types[UPLPGSQL_INT64];
-		LLVMTypeRef ptr = ctx->types[UPLPGSQL_PTR];
-		LLVMValueRef off, gep, plstate, datums, datum, isnull_raw;
+		llvm::Type *i8 = ctx->types[UPLPGSQL_INT8];
+		llvm::Type *i64 = ctx->types[UPLPGSQL_INT64];
+		llvm::Type *ptr = ctx->types[UPLPGSQL_PTR];
+		llvm::Value *off, *gep, *plstate, *datums, *datum, *isnull_raw;
 
-		off = LLVMConstInt(i64, OFF_ESTATE_PLSTATE, false);
-		gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1, "plstate.ptr");
-		plstate = LLVMBuildLoad2(builder, ptr, gep, "plstate");
+		off = llvm::ConstantInt::get(i64, OFF_ESTATE_PLSTATE, false);
+		gep = builder->CreateGEP(i8, estate_ref, {off}, "plstate.ptr");
+		plstate = builder->CreateLoad(ptr, gep, "plstate");
 
-		off = LLVMConstInt(i64, OFF_EXECSTATE_DATUMS, false);
-		gep = LLVMBuildGEP2(builder, i8, plstate, &off, 1, "datums.ptr");
-		datums = LLVMBuildLoad2(builder, ptr, gep, "datums");
+		off = llvm::ConstantInt::get(i64, OFF_EXECSTATE_DATUMS, false);
+		gep = builder->CreateGEP(i8, plstate, {off}, "datums.ptr");
+		datums = builder->CreateLoad(ptr, gep, "datums");
 
-		off = LLVMConstInt(i64, dno, false);
-		gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, "datum.slot");
-		datum = LLVMBuildLoad2(builder, ptr, gep, "datum");
+		off = llvm::ConstantInt::get(i64, dno, false);
+		gep = builder->CreateGEP(ptr, datums, {off}, "datum.slot");
+		datum = builder->CreateLoad(ptr, gep, "datum");
 
-		off = LLVMConstInt(i64, OFF_VAR_ISNULL, false);
-		gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "isnull.ptr");
-		isnull_raw = LLVMBuildLoad2(builder, i8, gep, "isnull.raw");
-		return LLVMBuildTrunc(builder, isnull_raw, i1, "isnull");
+		off = llvm::ConstantInt::get(i64, OFF_VAR_ISNULL, false);
+		gep = builder->CreateGEP(i8, datum, {off}, "isnull.ptr");
+		isnull_raw = builder->CreateLoad(i8, gep, "isnull.raw");
+		return builder->CreateTrunc(isnull_raw, i1, "isnull");
 	}
 }
 
@@ -537,43 +517,42 @@ uplpgsql_emit_load_param_isnull(UPLpgSQL_compile_ctx *ctx,
  * nulls_ptr holds either a per-element bool array or NULL when no element is
  * null, so the flags load has to be guarded.  Returns an i1.
  */
-static LLVMValueRef
+static llvm::Value *
 emit_native_array_elem_isnull(UPLpgSQL_compile_ctx *ctx,
-							  UPLpgSQL_native_array *na, LLVMValueRef idx0)
+							  UPLpgSQL_native_array *na, llvm::Value *idx0)
 {
-	LLVMBuilderRef		builder = ctx->builder;
-	LLVMTypeRef			i8 = ctx->types[UPLPGSQL_INT8];
-	LLVMTypeRef			i1 = ctx->types[UPLPGSQL_INT1];
-	LLVMValueRef		nulls, has_nulls, gep, flag, phi;
-	LLVMValueRef		vals[2];
-	LLVMBasicBlockRef	blocks[2];
-	LLVMBasicBlockRef	load_bb, done_bb, from_bb;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type			*i8 = ctx->types[UPLPGSQL_INT8];
+	llvm::Type			*i1 = ctx->types[UPLPGSQL_INT1];
+	llvm::Value		   *nulls, *has_nulls, *gep, *flag;
+	llvm::PHINode	   *phi;
+	llvm::Value		*vals[2];
+	llvm::BasicBlock	*blocks[2];
+	llvm::BasicBlock	*load_bb, *done_bb, *from_bb;
 
-	nulls = LLVMBuildLoad2(builder, ctx->types[UPLPGSQL_PTR],
-						   na->nulls_ptr, "na.nulls");
-	has_nulls = LLVMBuildICmp(builder, LLVMIntNE, nulls,
-							  LLVMConstNull(ctx->types[UPLPGSQL_PTR]),
-							  "na.has.nulls");
+	nulls = builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->nulls_ptr, "na.nulls");
+	has_nulls = builder->CreateICmpNE(nulls, llvm::Constant::getNullValue(ctx->types[UPLPGSQL_PTR]), "na.has.nulls");
 
 	load_bb = expr_append_block(ctx, "na.nulls.load");
 	done_bb = expr_append_block(ctx, "na.nulls.done");
 
-	from_bb = LLVMGetInsertBlock(builder);
-	LLVMBuildCondBr(builder, has_nulls, load_bb, done_bb);
+	from_bb = builder->GetInsertBlock();
+	builder->CreateCondBr(has_nulls, load_bb, done_bb);
 
-	LLVMPositionBuilderAtEnd(builder, load_bb);
-	gep = LLVMBuildGEP2(builder, i8, nulls, &idx0, 1, "na.null.ptr");
-	flag = LLVMBuildLoad2(builder, i8, gep, "na.null.raw");
-	flag = LLVMBuildTrunc(builder, flag, i1, "na.null.flag");
-	LLVMBuildBr(builder, done_bb);
+	builder->SetInsertPoint(load_bb);
+	gep = builder->CreateGEP(i8, nulls, {idx0}, "na.null.ptr");
+	flag = builder->CreateLoad(i8, gep, "na.null.raw");
+	flag = builder->CreateTrunc(flag, i1, "na.null.flag");
+	builder->CreateBr(done_bb);
 
-	LLVMPositionBuilderAtEnd(builder, done_bb);
-	phi = LLVMBuildPhi(builder, i1, "na.elem.isnull");
-	vals[0] = LLVMConstInt(i1, 0, false);
+	builder->SetInsertPoint(done_bb);
+	phi = builder->CreatePHI(i1, 2, "na.elem.isnull");
+	vals[0] = llvm::ConstantInt::get(i1, 0, false);
 	blocks[0] = from_bb;
 	vals[1] = flag;
 	blocks[1] = load_bb;
-	LLVMAddIncoming(phi, vals, blocks, 2);
+	phi->addIncoming(vals[0], blocks[0]);
+	phi->addIncoming(vals[1], blocks[1]);
 
 	return phi;
 }
@@ -593,11 +572,11 @@ emit_native_array_elem_isnull(UPLpgSQL_compile_ctx *ctx,
  * Returns an i1, or NULL if the expression has no nullable leaf at all (a
  * constant expression), letting the caller skip the check entirely.
  */
-static LLVMValueRef
+static llvm::Value *
 tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-					LLVMValueRef estate_ref)
+					llvm::Value *estate_ref)
 {
-	LLVMBuilderRef	builder = ctx->builder;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
 
 	if (expr == NULL)
 		return NULL;
@@ -642,7 +621,7 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				 *     i > lb+len-1-> past the end (len 0 catches NULL/empty)
 				 */
 				SubscriptingRef *s = (SubscriptingRef *) expr;
-				LLVMValueRef	acc = NULL;
+				llvm::Value	*acc = NULL;
 				ListCell	   *lc;
 				UPLpgSQL_native_array *na = NULL;
 
@@ -670,47 +649,36 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 				foreach(lc, s->refupperindexpr)
 				{
-					LLVMValueRef v = tier1_expr_any_null(ctx,
+					llvm::Value *v = tier1_expr_any_null(ctx,
 														 (Expr *) lfirst(lc),
 														 estate_ref);
 					if (v == NULL)
 						continue;
 					acc = (acc == NULL) ? v
-						: LLVMBuildOr(builder, acc, v, "anynull");
+						: builder->CreateOr(acc, v, "anynull");
 				}
 
 				if (na != NULL)
 				{
-					LLVMTypeRef		i32 = ctx->types[UPLPGSQL_INT32];
+					llvm::Type		*i32 = ctx->types[UPLPGSQL_INT32];
 					ExprTypeClass	idx_class;
-					LLVMValueRef	idx, len, lb, oob;
+					llvm::Value	*idx, *len, *lb, *oob;
 
 					idx = uplpgsql_compile_expr_datum(ctx,
 						(Expr *) linitial(s->refupperindexpr), estate_ref,
 						&idx_class);
 					if (idx_class == EXPR_TYPE_INT8)
-						idx = LLVMBuildTrunc(builder, idx, i32, "na.idx32");
+						idx = builder->CreateTrunc(idx, i32, "na.idx32");
 
-					len = LLVMBuildLoad2(builder, i32, na->len_ptr, "na.len");
-					lb = LLVMBuildLoad2(builder, i32, na->lb_ptr, "na.lb");
+					len = builder->CreateLoad(i32, na->len_ptr, "na.len");
+					lb = builder->CreateLoad(i32, na->lb_ptr, "na.lb");
 
 					/* len < 0: not a 1-D array, so a[i] is NULL */
-					oob = LLVMBuildICmp(builder, LLVMIntSLT, len,
-										LLVMConstInt(i32, 0, true),
-										"na.notflat");
+					oob = builder->CreateICmpSLT(len, llvm::ConstantInt::get(i32, 0, true), "na.notflat");
 					/* i < lb */
-					oob = LLVMBuildOr(builder, oob,
-						LLVMBuildICmp(builder, LLVMIntSLT, idx, lb,
-									  "na.below"),
-						"na.oob");
+					oob = builder->CreateOr(oob, builder->CreateICmpSLT(idx, lb, "na.below"), "na.oob");
 					/* i > lb + len - 1 */
-					oob = LLVMBuildOr(builder, oob,
-						LLVMBuildICmp(builder, LLVMIntSGT, idx,
-							LLVMBuildSub(builder,
-								LLVMBuildAdd(builder, lb, len, "na.end"),
-								LLVMConstInt(i32, 1, false), "na.last"),
-							"na.above"),
-						"na.oob2");
+					oob = builder->CreateOr(oob, builder->CreateICmpSGT(idx, builder->CreateSub(builder->CreateAdd(lb, len, "na.end"), llvm::ConstantInt::get(i32, 1, false), "na.last"), "na.above"), "na.oob2");
 
 					/*
 					 * ...and, when in range, the element may itself be NULL —
@@ -721,17 +689,16 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					 * OR-ed with oob anyway.
 					 */
 					{
-						LLVMValueRef idx0, elem_null;
+						llvm::Value *idx0, *elem_null;
 
-						idx0 = LLVMBuildSub(builder, idx, lb, "na.idx0");
+						idx0 = builder->CreateSub(idx, lb, "na.idx0");
 						elem_null = emit_native_array_elem_isnull(ctx, na,
 																  idx0);
-						oob = LLVMBuildOr(builder, oob, elem_null,
-										  "na.oob.or.null");
+						oob = builder->CreateOr(oob, elem_null, "na.oob.or.null");
 					}
 
 					acc = (acc == NULL) ? oob
-						: LLVMBuildOr(builder, acc, oob, "anynull");
+						: builder->CreateOr(acc, oob, "anynull");
 				}
 				else if (IsA(s->refexpr, Param) &&
 						 list_length(s->refupperindexpr) == 1 &&
@@ -759,29 +726,25 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					 */
 					int				array_dno =
 						((Param *) s->refexpr)->paramid - 1;
-					LLVMTypeRef		i1 = ctx->types[UPLPGSQL_INT1];
-					LLVMTypeRef		i32 = ctx->types[UPLPGSQL_INT32];
+					llvm::Type		*i1 = ctx->types[UPLPGSQL_INT1];
+					llvm::Type		*i32 = ctx->types[UPLPGSQL_INT32];
 					ExprTypeClass	idx_class;
-					LLVMValueRef	idx, isnull_ptr, elem_null;
-					LLVMBasicBlockRef entry_bb;
+					llvm::Value	*idx, *isnull_ptr, *elem_null;
+					llvm::BasicBlock *entry_bb;
 
 					idx = uplpgsql_compile_expr_datum(ctx,
 						(Expr *) linitial(s->refupperindexpr), estate_ref,
 						&idx_class);
 					if (idx_class == EXPR_TYPE_INT8)
-						idx = LLVMBuildTrunc(builder, idx, i32, "sref.idx32");
+						idx = builder->CreateTrunc(idx, i32, "sref.idx32");
 
 					/* Alloca for isNull output (must be in entry block) */
-					entry_bb = LLVMGetEntryBasicBlock(ctx->function);
+					entry_bb = &ctx->function->getEntryBlock();
 					{
-						LLVMBuilderRef tmp =
-							LLVMCreateBuilderInContext(ctx->context);
+						llvm::IRBuilder<> tmp(*ctx->context);
 
-						LLVMPositionBuilderBefore(tmp,
-							LLVMGetFirstInstruction(entry_bb));
-						isnull_ptr = LLVMBuildAlloca(tmp, i1,
-													 "sref_probe_isnull");
-						LLVMDisposeBuilder(tmp);
+						tmp.SetInsertPoint(entry_bb, entry_bb->begin());
+						isnull_ptr = tmp.CreateAlloca(i1, nullptr, "sref_probe_isnull");
 					}
 
 					{
@@ -789,9 +752,9 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 						resolve_array_type_info(ctx, array_dno, &ati);
 						{
-							LLVMValueRef args[] = {
+							llvm::Value *args[] = {
 								estate_ref,
-								LLVMConstInt(i32, array_dno, false),
+								llvm::ConstantInt::get(i32, array_dno, false),
 								idx,
 								ati.typlen_val,
 								ati.elmlen_val,
@@ -800,17 +763,13 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 								isnull_ptr
 							};
 
-							LLVMBuildCall2(builder,
-								ctx->rt_fntypes[RT_ARRAY_GET_ELEMENT],
-								ctx->rt_funcs[RT_ARRAY_GET_ELEMENT],
-								args, 8, "sref.probe");
+							builder->CreateCall(ctx->rt_funcs[RT_ARRAY_GET_ELEMENT], args, "sref.probe");
 						}
 					}
 
-					elem_null = LLVMBuildLoad2(builder, i1, isnull_ptr,
-											   "sref.elemnull");
+					elem_null = builder->CreateLoad(i1, isnull_ptr, "sref.elemnull");
 					acc = (acc == NULL) ? elem_null
-						: LLVMBuildOr(builder, acc, elem_null, "anynull");
+						: builder->CreateOr(acc, elem_null, "anynull");
 				}
 
 				return acc;
@@ -821,18 +780,18 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			{
 				List	   *args = IsA(expr, OpExpr) ? ((OpExpr *) expr)->args
 													 : ((FuncExpr *) expr)->args;
-				LLVMValueRef acc = NULL;
+				llvm::Value *acc = NULL;
 				ListCell   *lc;
 
 				foreach(lc, args)
 				{
-					LLVMValueRef v = tier1_expr_any_null(ctx,
+					llvm::Value *v = tier1_expr_any_null(ctx,
 														 (Expr *) lfirst(lc),
 														 estate_ref);
 					if (v == NULL)
 						continue;
 					acc = (acc == NULL) ? v
-						: LLVMBuildOr(builder, acc, v, "anynull");
+						: builder->CreateOr(acc, v, "anynull");
 				}
 				return acc;
 			}
@@ -843,7 +802,7 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			 * Be conservative anyway and claim it might be null, which costs
 			 * only the fallback path.
 			 */
-			return LLVMConstInt(ctx->types[UPLPGSQL_INT1], 1, false);
+			return llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 1, false);
 	}
 }
 
@@ -866,17 +825,18 @@ tier1_expr_any_null(UPLpgSQL_compile_ctx *ctx, Expr *expr,
  * *isnull_out alongside the value, and nothing looks at the value when the
  * flag is set.
  */
-static LLVMValueRef
+static llvm::Value *
 tier1_compile_value_guarded(UPLpgSQL_compile_ctx *ctx, Expr *val_expr,
-							LLVMValueRef estate_ref,
+							llvm::Value *estate_ref,
 							ExprTypeClass *val_class,
-							LLVMValueRef *isnull_out)
+							llvm::Value **isnull_out)
 {
-	LLVMTypeRef			vty;
-	LLVMValueRef		computed, phi;
-	LLVMValueRef		vals[2];
-	LLVMBasicBlockRef	blocks[2];
-	LLVMBasicBlockRef	compute_bb, join_bb, from_bb;
+	llvm::Type			*vty;
+	llvm::Value		   *computed;
+	llvm::PHINode	   *phi;
+	llvm::Value		*vals[2];
+	llvm::BasicBlock	*blocks[2];
+	llvm::BasicBlock	*compute_bb, *join_bb, *from_bb;
 
 	*isnull_out = tier1_expr_any_null(ctx, val_expr, estate_ref);
 	if (*isnull_out == NULL)
@@ -898,21 +858,22 @@ tier1_compile_value_guarded(UPLpgSQL_compile_ctx *ctx, Expr *val_expr,
 	compute_bb = expr_append_block(ctx, "t1.val.compute");
 	join_bb = expr_append_block(ctx, "t1.val.done");
 
-	from_bb = LLVMGetInsertBlock(ctx->builder);
-	LLVMBuildCondBr(ctx->builder, *isnull_out, join_bb, compute_bb);
+	from_bb = ctx->builder->GetInsertBlock();
+	ctx->builder->CreateCondBr(*isnull_out, join_bb, compute_bb);
 
-	LLVMPositionBuilderAtEnd(ctx->builder, compute_bb);
+	ctx->builder->SetInsertPoint(compute_bb);
 	computed = uplpgsql_compile_expr_datum(ctx, val_expr, estate_ref,
 										   val_class);
 	vals[1] = computed;
-	blocks[1] = LLVMGetInsertBlock(ctx->builder);
-	LLVMBuildBr(ctx->builder, join_bb);
+	blocks[1] = ctx->builder->GetInsertBlock();
+	ctx->builder->CreateBr(join_bb);
 
-	LLVMPositionBuilderAtEnd(ctx->builder, join_bb);
-	phi = LLVMBuildPhi(ctx->builder, vty, "t1.val");
-	vals[0] = LLVMConstNull(vty);
+	ctx->builder->SetInsertPoint(join_bb);
+	phi = ctx->builder->CreatePHI(vty, 2, "t1.val");
+	vals[0] = llvm::Constant::getNullValue(vty);
 	blocks[0] = from_bb;
-	LLVMAddIncoming(phi, vals, blocks, 2);
+	phi->addIncoming(vals[0], blocks[0]);
+	phi->addIncoming(vals[1], blocks[1]);
 
 	return phi;
 }
@@ -923,41 +884,41 @@ tier1_compile_value_guarded(UPLpgSQL_compile_ctx *ctx, Expr *val_expr,
  */
 static void
 uplpgsql_emit_store_var_datum(UPLpgSQL_compile_ctx *ctx,
-							 LLVMValueRef estate_ref, int dno,
-							 LLVMValueRef datum_val)
+							 llvm::Value *estate_ref, int dno,
+							 llvm::Value *datum_val)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i8 = ctx->types[UPLPGSQL_INT8];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
-	LLVMTypeRef		ptr = ctx->types[UPLPGSQL_PTR];
-	LLVMValueRef	off, gep, plstate, datums, datum;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i8 = ctx->types[UPLPGSQL_INT8];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type		*ptr = ctx->types[UPLPGSQL_PTR];
+	llvm::Value	*off, *gep, *plstate, *datums, *datum;
 
-	off = LLVMConstInt(i64, OFF_ESTATE_PLSTATE, false);
-	gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1, "st.plstate.ptr");
-	plstate = LLVMBuildLoad2(builder, ptr, gep, "st.plstate");
+	off = llvm::ConstantInt::get(i64, OFF_ESTATE_PLSTATE, false);
+	gep = builder->CreateGEP(i8, estate_ref, {off}, "st.plstate.ptr");
+	plstate = builder->CreateLoad(ptr, gep, "st.plstate");
 
-	off = LLVMConstInt(i64, OFF_EXECSTATE_DATUMS, false);
-	gep = LLVMBuildGEP2(builder, i8, plstate, &off, 1, "st.datums.ptr");
-	datums = LLVMBuildLoad2(builder, ptr, gep, "st.datums");
+	off = llvm::ConstantInt::get(i64, OFF_EXECSTATE_DATUMS, false);
+	gep = builder->CreateGEP(i8, plstate, {off}, "st.datums.ptr");
+	datums = builder->CreateLoad(ptr, gep, "st.datums");
 
-	off = LLVMConstInt(i64, dno, false);
-	gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, "st.datum.slot");
-	datum = LLVMBuildLoad2(builder, ptr, gep, "st.datum");
+	off = llvm::ConstantInt::get(i64, dno, false);
+	gep = builder->CreateGEP(ptr, datums, {off}, "st.datum.slot");
+	datum = builder->CreateLoad(ptr, gep, "st.datum");
 
 	/* datum->value = datum_val */
-	off = LLVMConstInt(i64, OFF_VAR_VALUE, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "st.value.ptr");
-	LLVMBuildStore(builder, datum_val, gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_VALUE, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "st.value.ptr");
+	builder->CreateStore(datum_val, gep);
 
 	/* datum->isnull = false */
-	off = LLVMConstInt(i64, OFF_VAR_ISNULL, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "st.isnull.ptr");
-	LLVMBuildStore(builder, LLVMConstInt(i8, 0, false), gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_ISNULL, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "st.isnull.ptr");
+	builder->CreateStore(llvm::ConstantInt::get(i8, 0, false), gep);
 
 	/* datum->freeval = false */
-	off = LLVMConstInt(i64, OFF_VAR_FREEVAL, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "st.freeval.ptr");
-	LLVMBuildStore(builder, LLVMConstInt(i8, 0, false), gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_FREEVAL, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "st.freeval.ptr");
+	builder->CreateStore(llvm::ConstantInt::get(i8, 0, false), gep);
 }
 
 /*
@@ -968,41 +929,39 @@ uplpgsql_emit_store_var_datum(UPLpgSQL_compile_ctx *ctx,
  */
 static void
 uplpgsql_emit_store_var_datum_isnull(UPLpgSQL_compile_ctx *ctx,
-									 LLVMValueRef estate_ref, int dno,
-									 LLVMValueRef datum_val,
-									 LLVMValueRef isnull_val)
+									 llvm::Value *estate_ref, int dno,
+									 llvm::Value *datum_val,
+									 llvm::Value *isnull_val)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i8 = ctx->types[UPLPGSQL_INT8];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
-	LLVMTypeRef		ptr = ctx->types[UPLPGSQL_PTR];
-	LLVMValueRef	off, gep, plstate, datums, datum;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i8 = ctx->types[UPLPGSQL_INT8];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type		*ptr = ctx->types[UPLPGSQL_PTR];
+	llvm::Value	*off, *gep, *plstate, *datums, *datum;
 
-	off = LLVMConstInt(i64, OFF_ESTATE_PLSTATE, false);
-	gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1, "si.plstate.ptr");
-	plstate = LLVMBuildLoad2(builder, ptr, gep, "si.plstate");
+	off = llvm::ConstantInt::get(i64, OFF_ESTATE_PLSTATE, false);
+	gep = builder->CreateGEP(i8, estate_ref, {off}, "si.plstate.ptr");
+	plstate = builder->CreateLoad(ptr, gep, "si.plstate");
 
-	off = LLVMConstInt(i64, OFF_EXECSTATE_DATUMS, false);
-	gep = LLVMBuildGEP2(builder, i8, plstate, &off, 1, "si.datums.ptr");
-	datums = LLVMBuildLoad2(builder, ptr, gep, "si.datums");
+	off = llvm::ConstantInt::get(i64, OFF_EXECSTATE_DATUMS, false);
+	gep = builder->CreateGEP(i8, plstate, {off}, "si.datums.ptr");
+	datums = builder->CreateLoad(ptr, gep, "si.datums");
 
-	off = LLVMConstInt(i64, dno, false);
-	gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, "si.datum.slot");
-	datum = LLVMBuildLoad2(builder, ptr, gep, "si.datum");
+	off = llvm::ConstantInt::get(i64, dno, false);
+	gep = builder->CreateGEP(ptr, datums, {off}, "si.datum.slot");
+	datum = builder->CreateLoad(ptr, gep, "si.datum");
 
-	off = LLVMConstInt(i64, OFF_VAR_VALUE, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "si.value.ptr");
-	LLVMBuildStore(builder, datum_val, gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_VALUE, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "si.value.ptr");
+	builder->CreateStore(datum_val, gep);
 
-	off = LLVMConstInt(i64, OFF_VAR_ISNULL, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "si.isnull.ptr");
-	LLVMBuildStore(builder,
-				   LLVMBuildZExt(builder, isnull_val, i8, "si.isnull.i8"),
-				   gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_ISNULL, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "si.isnull.ptr");
+	builder->CreateStore(builder->CreateZExt(isnull_val, i8, "si.isnull.i8"), gep);
 
-	off = LLVMConstInt(i64, OFF_VAR_FREEVAL, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "si.freeval.ptr");
-	LLVMBuildStore(builder, LLVMConstInt(i8, 0, false), gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_FREEVAL, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "si.freeval.ptr");
+	builder->CreateStore(llvm::ConstantInt::get(i8, 0, false), gep);
 }
 
 /*
@@ -1015,40 +974,40 @@ uplpgsql_emit_store_var_datum_isnull(UPLpgSQL_compile_ctx *ctx,
  */
 static void
 uplpgsql_emit_store_var_null(UPLpgSQL_compile_ctx *ctx,
-							 LLVMValueRef estate_ref, int dno)
+							 llvm::Value *estate_ref, int dno)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i8 = ctx->types[UPLPGSQL_INT8];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
-	LLVMTypeRef		ptr = ctx->types[UPLPGSQL_PTR];
-	LLVMValueRef	off, gep, plstate, datums, datum;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i8 = ctx->types[UPLPGSQL_INT8];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type		*ptr = ctx->types[UPLPGSQL_PTR];
+	llvm::Value	*off, *gep, *plstate, *datums, *datum;
 
-	off = LLVMConstInt(i64, OFF_ESTATE_PLSTATE, false);
-	gep = LLVMBuildGEP2(builder, i8, estate_ref, &off, 1, "sn.plstate.ptr");
-	plstate = LLVMBuildLoad2(builder, ptr, gep, "sn.plstate");
+	off = llvm::ConstantInt::get(i64, OFF_ESTATE_PLSTATE, false);
+	gep = builder->CreateGEP(i8, estate_ref, {off}, "sn.plstate.ptr");
+	plstate = builder->CreateLoad(ptr, gep, "sn.plstate");
 
-	off = LLVMConstInt(i64, OFF_EXECSTATE_DATUMS, false);
-	gep = LLVMBuildGEP2(builder, i8, plstate, &off, 1, "sn.datums.ptr");
-	datums = LLVMBuildLoad2(builder, ptr, gep, "sn.datums");
+	off = llvm::ConstantInt::get(i64, OFF_EXECSTATE_DATUMS, false);
+	gep = builder->CreateGEP(i8, plstate, {off}, "sn.datums.ptr");
+	datums = builder->CreateLoad(ptr, gep, "sn.datums");
 
-	off = LLVMConstInt(i64, dno, false);
-	gep = LLVMBuildGEP2(builder, ptr, datums, &off, 1, "sn.datum.slot");
-	datum = LLVMBuildLoad2(builder, ptr, gep, "sn.datum");
+	off = llvm::ConstantInt::get(i64, dno, false);
+	gep = builder->CreateGEP(ptr, datums, {off}, "sn.datum.slot");
+	datum = builder->CreateLoad(ptr, gep, "sn.datum");
 
 	/* datum->value = 0 */
-	off = LLVMConstInt(i64, OFF_VAR_VALUE, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "sn.value.ptr");
-	LLVMBuildStore(builder, LLVMConstInt(i64, 0, false), gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_VALUE, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "sn.value.ptr");
+	builder->CreateStore(llvm::ConstantInt::get(i64, 0, false), gep);
 
 	/* datum->isnull = true */
-	off = LLVMConstInt(i64, OFF_VAR_ISNULL, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "sn.isnull.ptr");
-	LLVMBuildStore(builder, LLVMConstInt(i8, 1, false), gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_ISNULL, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "sn.isnull.ptr");
+	builder->CreateStore(llvm::ConstantInt::get(i8, 1, false), gep);
 
 	/* datum->freeval = false */
-	off = LLVMConstInt(i64, OFF_VAR_FREEVAL, false);
-	gep = LLVMBuildGEP2(builder, i8, datum, &off, 1, "sn.freeval.ptr");
-	LLVMBuildStore(builder, LLVMConstInt(i8, 0, false), gep);
+	off = llvm::ConstantInt::get(i64, OFF_VAR_FREEVAL, false);
+	gep = builder->CreateGEP(i8, datum, {off}, "sn.freeval.ptr");
+	builder->CreateStore(llvm::ConstantInt::get(i8, 0, false), gep);
 }
 
 
@@ -1535,21 +1494,23 @@ uplpgsql_rt_array_subscript_null(void)
 /*
  * Emit a call to a no-arg error runtime function, followed by unreachable.
  *
- * Uses LLVMGetNamedFunction to reuse an existing declaration rather than
+ * Uses Module::getFunction to reuse an existing declaration rather than
  * creating duplicates (LLVM would mangle the name, breaking symbol lookup).
  */
 static void
 emit_error_call(UPLpgSQL_compile_ctx *ctx, const char *fn_name)
 {
-	LLVMTypeRef err_ft = LLVMFunctionType(ctx->types[UPLPGSQL_VOID],
-										  NULL, 0, false);
-	LLVMValueRef err_fn = LLVMGetNamedFunction(ctx->module, fn_name);
+	llvm::FunctionType *err_ft = llvm::FunctionType::get(
+		ctx->types[UPLPGSQL_VOID], false);
+	llvm::Function *err_fn = ctx->module->getFunction(fn_name);
 
 	if (err_fn == NULL)
-		err_fn = LLVMAddFunction(ctx->module, fn_name, err_ft);
+		err_fn = llvm::Function::Create(err_ft,
+										llvm::Function::ExternalLinkage,
+										fn_name, ctx->module.get());
 
-	LLVMBuildCall2(ctx->builder, err_ft, err_fn, NULL, 0, "");
-	LLVMBuildUnreachable(ctx->builder);
+	ctx->builder->CreateCall(err_fn);
+	ctx->builder->CreateUnreachable();
 }
 
 /*
@@ -1574,10 +1535,10 @@ emit_error_call(UPLpgSQL_compile_ctx *ctx, const char *fn_name)
  */
 static void
 emit_set_subscript_null_check(UPLpgSQL_compile_ctx *ctx, Expr *idx_expr,
-							  LLVMValueRef estate_ref)
+							  llvm::Value *estate_ref)
 {
-	LLVMValueRef		idx_isnull;
-	LLVMBasicBlockRef	null_bb, ok_bb;
+	llvm::Value		*idx_isnull;
+	llvm::BasicBlock	*null_bb, *ok_bb;
 
 	idx_isnull = tier1_expr_any_null(ctx, idx_expr, estate_ref);
 	if (idx_isnull == NULL)
@@ -1586,12 +1547,12 @@ emit_set_subscript_null_check(UPLpgSQL_compile_ctx *ctx, Expr *idx_expr,
 	null_bb = expr_append_block(ctx, "na.set.idxnull");
 	ok_bb = expr_append_block(ctx, "na.set.idxok");
 
-	LLVMBuildCondBr(ctx->builder, idx_isnull, null_bb, ok_bb);
+	ctx->builder->CreateCondBr(idx_isnull, null_bb, ok_bb);
 
-	LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
+	ctx->builder->SetInsertPoint(null_bb);
 	emit_error_call(ctx, "uplpgsql_rt_array_subscript_null");
 
-	LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
+	ctx->builder->SetInsertPoint(ok_bb);
 }
 
 
@@ -1613,54 +1574,50 @@ emit_set_subscript_null_check(UPLpgSQL_compile_ctx *ctx, Expr *idx_expr,
  */
 
 /* isnan(v): true when v is unordered with itself */
-static LLVMValueRef
-emit_float_isnan(UPLpgSQL_compile_ctx *ctx, LLVMValueRef v, const char *name)
+static llvm::Value *
+emit_float_isnan(UPLpgSQL_compile_ctx *ctx, llvm::Value *v, const char *name)
 {
-	return LLVMBuildFCmp(ctx->builder, LLVMRealUNO, v, v, name);
+	return ctx->builder->CreateFCmpUNO(v, v, name);
 }
 
 /* isinf(v): v == +Inf || v == -Inf */
-static LLVMValueRef
-emit_float_isinf(UPLpgSQL_compile_ctx *ctx, LLVMValueRef v, const char *name)
+static llvm::Value *
+emit_float_isinf(UPLpgSQL_compile_ctx *ctx, llvm::Value *v, const char *name)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		dbl = ctx->types[UPLPGSQL_DOUBLE];
-	LLVMValueRef	pos, neg;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*dbl = ctx->types[UPLPGSQL_DOUBLE];
+	llvm::Value	*pos, *neg;
 
-	pos = LLVMBuildFCmp(builder, LLVMRealOEQ, v,
-						LLVMConstReal(dbl, INFINITY), "isinf.p");
-	neg = LLVMBuildFCmp(builder, LLVMRealOEQ, v,
-						LLVMConstReal(dbl, -INFINITY), "isinf.n");
-	return LLVMBuildOr(builder, pos, neg, name);
+	pos = builder->CreateFCmpOEQ(v, llvm::ConstantFP::get(dbl, INFINITY), "isinf.p");
+	neg = builder->CreateFCmpOEQ(v, llvm::ConstantFP::get(dbl, -INFINITY), "isinf.n");
+	return builder->CreateOr(pos, neg, name);
 }
 
 /* v == 0.0 */
-static LLVMValueRef
-emit_float_iszero(UPLpgSQL_compile_ctx *ctx, LLVMValueRef v, const char *name)
+static llvm::Value *
+emit_float_iszero(UPLpgSQL_compile_ctx *ctx, llvm::Value *v, const char *name)
 {
-	return LLVMBuildFCmp(ctx->builder, LLVMRealOEQ, v,
-						 LLVMConstReal(ctx->types[UPLPGSQL_DOUBLE], 0.0),
-						 name);
+	return ctx->builder->CreateFCmpOEQ(v, llvm::ConstantFP::get(ctx->types[UPLPGSQL_DOUBLE], 0.0), name);
 }
 
 /*
  * Branch to a float error function when cond holds, else continue.
  */
 static void
-emit_float_error_if(UPLpgSQL_compile_ctx *ctx, LLVMValueRef cond,
+emit_float_error_if(UPLpgSQL_compile_ctx *ctx, llvm::Value *cond,
 					const char *fn_name, const char *tag)
 {
-	LLVMBasicBlockRef	err_bb, ok_bb;
+	llvm::BasicBlock	*err_bb, *ok_bb;
 
 	err_bb = expr_append_block(ctx, tag);
 	ok_bb = expr_append_block(ctx, "f8.ok");
 
-	LLVMBuildCondBr(ctx->builder, cond, err_bb, ok_bb);
+	ctx->builder->CreateCondBr(cond, err_bb, ok_bb);
 
-	LLVMPositionBuilderAtEnd(ctx->builder, err_bb);
+	ctx->builder->SetInsertPoint(err_bb);
 	emit_error_call(ctx, fn_name);
 
-	LLVMPositionBuilderAtEnd(ctx->builder, ok_bb);
+	ctx->builder->SetInsertPoint(ok_bb);
 }
 
 /*
@@ -1668,25 +1625,17 @@ emit_float_error_if(UPLpgSQL_compile_ctx *ctx, LLVMValueRef cond,
  *   result = val1 +/- val2;
  *   if (isinf(result) && !isinf(val1) && !isinf(val2)) overflow;
  */
-static LLVMValueRef
-emit_float_addsub(UPLpgSQL_compile_ctx *ctx, LLVMValueRef lhs,
-				  LLVMValueRef rhs, bool is_add)
+static llvm::Value *
+emit_float_addsub(UPLpgSQL_compile_ctx *ctx, llvm::Value *lhs,
+				  llvm::Value *rhs, bool is_add)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMValueRef	result, cond;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Value	*result, *cond;
 
-	result = is_add ? LLVMBuildFAdd(builder, lhs, rhs, "f8.add")
-					: LLVMBuildFSub(builder, lhs, rhs, "f8.sub");
+	result = is_add ? builder->CreateFAdd(lhs, rhs, "f8.add")
+					: builder->CreateFSub(lhs, rhs, "f8.sub");
 
-	cond = LLVMBuildAnd(builder,
-		emit_float_isinf(ctx, result, "f8.r.inf"),
-		LLVMBuildAnd(builder,
-			LLVMBuildNot(builder, emit_float_isinf(ctx, lhs, "f8.l.inf"),
-						 "f8.l.fin"),
-			LLVMBuildNot(builder, emit_float_isinf(ctx, rhs, "f8.r2.inf"),
-						 "f8.r.fin"),
-			"f8.both.fin"),
-		"f8.ovf");
+	cond = builder->CreateAnd(emit_float_isinf(ctx, result, "f8.r.inf"), builder->CreateAnd(builder->CreateNot(emit_float_isinf(ctx, lhs, "f8.l.inf"), "f8.l.fin"), builder->CreateNot(emit_float_isinf(ctx, rhs, "f8.r2.inf"), "f8.r.fin"), "f8.both.fin"), "f8.ovf");
 
 	emit_float_error_if(ctx, cond, "float_overflow_error", "f8.ovf.err");
 	return result;
@@ -1698,34 +1647,18 @@ emit_float_addsub(UPLpgSQL_compile_ctx *ctx, LLVMValueRef lhs,
  *   if (isinf(result) && !isinf(val1) && !isinf(val2)) overflow;
  *   if (result == 0.0 && val1 != 0.0 && val2 != 0.0) underflow;
  */
-static LLVMValueRef
-emit_float_mul(UPLpgSQL_compile_ctx *ctx, LLVMValueRef lhs, LLVMValueRef rhs)
+static llvm::Value *
+emit_float_mul(UPLpgSQL_compile_ctx *ctx, llvm::Value *lhs, llvm::Value *rhs)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMValueRef	result, cond;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Value	*result, *cond;
 
-	result = LLVMBuildFMul(builder, lhs, rhs, "f8.mul");
+	result = builder->CreateFMul(lhs, rhs, "f8.mul");
 
-	cond = LLVMBuildAnd(builder,
-		emit_float_isinf(ctx, result, "f8.r.inf"),
-		LLVMBuildAnd(builder,
-			LLVMBuildNot(builder, emit_float_isinf(ctx, lhs, "f8.l.inf"),
-						 "f8.l.fin"),
-			LLVMBuildNot(builder, emit_float_isinf(ctx, rhs, "f8.r2.inf"),
-						 "f8.r.fin"),
-			"f8.both.fin"),
-		"f8.ovf");
+	cond = builder->CreateAnd(emit_float_isinf(ctx, result, "f8.r.inf"), builder->CreateAnd(builder->CreateNot(emit_float_isinf(ctx, lhs, "f8.l.inf"), "f8.l.fin"), builder->CreateNot(emit_float_isinf(ctx, rhs, "f8.r2.inf"), "f8.r.fin"), "f8.both.fin"), "f8.ovf");
 	emit_float_error_if(ctx, cond, "float_overflow_error", "f8.ovf.err");
 
-	cond = LLVMBuildAnd(builder,
-		emit_float_iszero(ctx, result, "f8.r.zero"),
-		LLVMBuildAnd(builder,
-			LLVMBuildNot(builder, emit_float_iszero(ctx, lhs, "f8.l.zero"),
-						 "f8.l.nz"),
-			LLVMBuildNot(builder, emit_float_iszero(ctx, rhs, "f8.r2.zero"),
-						 "f8.r.nz"),
-			"f8.both.nz"),
-		"f8.unf");
+	cond = builder->CreateAnd(emit_float_iszero(ctx, result, "f8.r.zero"), builder->CreateAnd(builder->CreateNot(emit_float_iszero(ctx, lhs, "f8.l.zero"), "f8.l.nz"), builder->CreateNot(emit_float_iszero(ctx, rhs, "f8.r2.zero"), "f8.r.nz"), "f8.both.nz"), "f8.unf");
 	emit_float_error_if(ctx, cond, "float_underflow_error", "f8.unf.err");
 
 	return result;
@@ -1738,37 +1671,21 @@ emit_float_mul(UPLpgSQL_compile_ctx *ctx, LLVMValueRef lhs, LLVMValueRef rhs)
  *   if (isinf(result) && !isinf(val1)) overflow;
  *   if (result == 0.0 && val1 != 0.0 && !isinf(val2)) underflow;
  */
-static LLVMValueRef
-emit_float_div(UPLpgSQL_compile_ctx *ctx, LLVMValueRef lhs, LLVMValueRef rhs)
+static llvm::Value *
+emit_float_div(UPLpgSQL_compile_ctx *ctx, llvm::Value *lhs, llvm::Value *rhs)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMValueRef	result, cond;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Value	*result, *cond;
 
-	cond = LLVMBuildAnd(builder,
-		emit_float_iszero(ctx, rhs, "f8.d.zero"),
-		LLVMBuildNot(builder, emit_float_isnan(ctx, lhs, "f8.l.nan"),
-					 "f8.l.notnan"),
-		"f8.divzero");
+	cond = builder->CreateAnd(emit_float_iszero(ctx, rhs, "f8.d.zero"), builder->CreateNot(emit_float_isnan(ctx, lhs, "f8.l.nan"), "f8.l.notnan"), "f8.divzero");
 	emit_float_error_if(ctx, cond, "float_zero_divide_error", "f8.div0.err");
 
-	result = LLVMBuildFDiv(builder, lhs, rhs, "f8.div");
+	result = builder->CreateFDiv(lhs, rhs, "f8.div");
 
-	cond = LLVMBuildAnd(builder,
-		emit_float_isinf(ctx, result, "f8.r.inf"),
-		LLVMBuildNot(builder, emit_float_isinf(ctx, lhs, "f8.l.inf"),
-					 "f8.l.fin"),
-		"f8.ovf");
+	cond = builder->CreateAnd(emit_float_isinf(ctx, result, "f8.r.inf"), builder->CreateNot(emit_float_isinf(ctx, lhs, "f8.l.inf"), "f8.l.fin"), "f8.ovf");
 	emit_float_error_if(ctx, cond, "float_overflow_error", "f8.ovf.err");
 
-	cond = LLVMBuildAnd(builder,
-		emit_float_iszero(ctx, result, "f8.r.zero"),
-		LLVMBuildAnd(builder,
-			LLVMBuildNot(builder, emit_float_iszero(ctx, lhs, "f8.l.zero"),
-						 "f8.l.nz"),
-			LLVMBuildNot(builder, emit_float_isinf(ctx, rhs, "f8.r2.inf"),
-						 "f8.r.fin"),
-			"f8.unf.rest"),
-		"f8.unf");
+	cond = builder->CreateAnd(emit_float_iszero(ctx, result, "f8.r.zero"), builder->CreateAnd(builder->CreateNot(emit_float_iszero(ctx, lhs, "f8.l.zero"), "f8.l.nz"), builder->CreateNot(emit_float_isinf(ctx, rhs, "f8.r2.inf"), "f8.r.fin"), "f8.unf.rest"), "f8.unf");
 	emit_float_error_if(ctx, cond, "float_underflow_error", "f8.unf.err");
 
 	return result;
@@ -1780,63 +1697,39 @@ emit_float_div(UPLpgSQL_compile_ctx *ctx, LLVMValueRef lhs, LLVMValueRef rhs)
  * formula below is the literal transcription of the corresponding inline
  * function in utils/float.h.  All are branch-free.
  */
-static LLVMValueRef
-emit_float_cmp(UPLpgSQL_compile_ctx *ctx, Oid fid, LLVMValueRef lhs,
-			   LLVMValueRef rhs)
+static llvm::Value *
+emit_float_cmp(UPLpgSQL_compile_ctx *ctx, Oid fid, llvm::Value *lhs,
+			   llvm::Value *rhs)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMValueRef	l_nan = emit_float_isnan(ctx, lhs, "f8.cmp.l.nan");
-	LLVMValueRef	r_nan = emit_float_isnan(ctx, rhs, "f8.cmp.r.nan");
-	LLVMValueRef	l_ok = LLVMBuildNot(builder, l_nan, "f8.cmp.l.ok");
-	LLVMValueRef	r_ok = LLVMBuildNot(builder, r_nan, "f8.cmp.r.ok");
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Value	*l_nan = emit_float_isnan(ctx, lhs, "f8.cmp.l.nan");
+	llvm::Value	*r_nan = emit_float_isnan(ctx, rhs, "f8.cmp.r.nan");
+	llvm::Value	*l_ok = builder->CreateNot(l_nan, "f8.cmp.l.ok");
+	llvm::Value	*r_ok = builder->CreateNot(r_nan, "f8.cmp.r.ok");
 
 	if (fid == F_FLOAT8EQ)
 		/* isnan(l) ? isnan(r) : !isnan(r) && l == r */
-		return LLVMBuildSelect(builder, l_nan, r_nan,
-			LLVMBuildAnd(builder, r_ok,
-				LLVMBuildFCmp(builder, LLVMRealOEQ, lhs, rhs, "f8.oeq"),
-				"f8.eq.rhs"),
-			"f8.eq");
+		return builder->CreateSelect(l_nan, r_nan, builder->CreateAnd(r_ok, builder->CreateFCmpOEQ(lhs, rhs, "f8.oeq"), "f8.eq.rhs"), "f8.eq");
 
 	if (fid == F_FLOAT8NE)
 		/* isnan(l) ? !isnan(r) : isnan(r) || l != r */
-		return LLVMBuildSelect(builder, l_nan, r_ok,
-			LLVMBuildOr(builder, r_nan,
-				LLVMBuildFCmp(builder, LLVMRealONE, lhs, rhs, "f8.one"),
-				"f8.ne.rhs"),
-			"f8.ne");
+		return builder->CreateSelect(l_nan, r_ok, builder->CreateOr(r_nan, builder->CreateFCmpONE(lhs, rhs, "f8.one"), "f8.ne.rhs"), "f8.ne");
 
 	if (fid == F_FLOAT8LT)
 		/* !isnan(l) && (isnan(r) || l < r) */
-		return LLVMBuildAnd(builder, l_ok,
-			LLVMBuildOr(builder, r_nan,
-				LLVMBuildFCmp(builder, LLVMRealOLT, lhs, rhs, "f8.olt"),
-				"f8.lt.rhs"),
-			"f8.lt");
+		return builder->CreateAnd(l_ok, builder->CreateOr(r_nan, builder->CreateFCmpOLT(lhs, rhs, "f8.olt"), "f8.lt.rhs"), "f8.lt");
 
 	if (fid == F_FLOAT8LE)
 		/* isnan(r) || (!isnan(l) && l <= r) */
-		return LLVMBuildOr(builder, r_nan,
-			LLVMBuildAnd(builder, l_ok,
-				LLVMBuildFCmp(builder, LLVMRealOLE, lhs, rhs, "f8.ole"),
-				"f8.le.rhs"),
-			"f8.le");
+		return builder->CreateOr(r_nan, builder->CreateAnd(l_ok, builder->CreateFCmpOLE(lhs, rhs, "f8.ole"), "f8.le.rhs"), "f8.le");
 
 	if (fid == F_FLOAT8GT)
 		/* !isnan(r) && (isnan(l) || l > r) */
-		return LLVMBuildAnd(builder, r_ok,
-			LLVMBuildOr(builder, l_nan,
-				LLVMBuildFCmp(builder, LLVMRealOGT, lhs, rhs, "f8.ogt"),
-				"f8.gt.rhs"),
-			"f8.gt");
+		return builder->CreateAnd(r_ok, builder->CreateOr(l_nan, builder->CreateFCmpOGT(lhs, rhs, "f8.ogt"), "f8.gt.rhs"), "f8.gt");
 
 	if (fid == F_FLOAT8GE)
 		/* isnan(l) || (!isnan(r) && l >= r) */
-		return LLVMBuildOr(builder, l_nan,
-			LLVMBuildAnd(builder, r_ok,
-				LLVMBuildFCmp(builder, LLVMRealOGE, lhs, rhs, "f8.oge"),
-				"f8.ge.rhs"),
-			"f8.ge");
+		return builder->CreateOr(l_nan, builder->CreateAnd(r_ok, builder->CreateFCmpOGE(lhs, rhs, "f8.oge"), "f8.ge.rhs"), "f8.ge");
 
 	elog(ERROR, "uplpgsql: unhandled float8 comparison funcid %u", fid);
 	return NULL;
@@ -1853,44 +1746,39 @@ emit_float_cmp(UPLpgSQL_compile_ctx *ctx, Oid fid, LLVMValueRef lhs,
 /*
  * Emit overflow-checked add/sub/mul for iN (N=32 or N=64).
  */
-static LLVMValueRef
+static llvm::Value *
 emit_int_arith_checked(UPLpgSQL_compile_ctx *ctx,
-					   LLVMValueRef lhs, LLVMValueRef rhs,
-					   const char *intrinsic_name,
-					   LLVMTypeRef int_type)
+					   llvm::Value *lhs, llvm::Value *rhs,
+					   llvm::Intrinsic::ID intrinsic_id,
+					   llvm::Type *int_type)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		ovf_types[] = { int_type };
-	unsigned		ovf_id;
-	LLVMValueRef	ovf_fn, ovf_args[2], ovf_result;
-	LLVMValueRef	value, overflow;
-	LLVMBasicBlockRef ovf_bb, ok_bb;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type	   *ovf_types[] = { int_type };
+	llvm::Function *ovf_fn;
+	llvm::Value	   *ovf_args[2], *ovf_result;
+	llvm::Value	   *value, *overflow;
+	llvm::BasicBlock *ovf_bb, *ok_bb;
 
-	ovf_id = LLVMLookupIntrinsicID(intrinsic_name, strlen(intrinsic_name));
-	ovf_fn = LLVMGetIntrinsicDeclaration(ctx->module, ovf_id, ovf_types, 1);
+	ovf_fn = llvm::Intrinsic::getOrInsertDeclaration(ctx->module.get(),
+													 intrinsic_id, ovf_types);
 
 	ovf_args[0] = lhs;
 	ovf_args[1] = rhs;
 
-	{
-		LLVMTypeRef ovf_fn_type = LLVMIntrinsicGetType(ctx->context, ovf_id,
-													   ovf_types, 1);
-		ovf_result = LLVMBuildCall2(builder, ovf_fn_type, ovf_fn,
-									ovf_args, 2, "ovf.result");
-	}
+	ovf_result = builder->CreateCall(ovf_fn, ovf_args, "ovf.result");
 
-	value = LLVMBuildExtractValue(builder, ovf_result, 0, "ovf.value");
-	overflow = LLVMBuildExtractValue(builder, ovf_result, 1, "ovf.flag");
+	value = builder->CreateExtractValue(ovf_result, {0}, "ovf.value");
+	overflow = builder->CreateExtractValue(ovf_result, {1}, "ovf.flag");
 
 	ovf_bb = expr_append_block(ctx, "ovf.error");
 	ok_bb = expr_append_block(ctx, "ovf.ok");
 
-	LLVMBuildCondBr(builder, overflow, ovf_bb, ok_bb);
+	builder->CreateCondBr(overflow, ovf_bb, ok_bb);
 
-	LLVMPositionBuilderAtEnd(builder, ovf_bb);
+	builder->SetInsertPoint(ovf_bb);
 	emit_error_call(ctx, "uplpgsql_rt_int_overflow");
 
-	LLVMPositionBuilderAtEnd(builder, ok_bb);
+	builder->SetInsertPoint(ok_bb);
 	return value;
 }
 
@@ -1898,51 +1786,48 @@ emit_int_arith_checked(UPLpgSQL_compile_ctx *ctx,
  * Emit checked division or modulo for iN.
  * Checks: divisor != 0, and for division, NOT (dividend = MIN && divisor = -1).
  */
-static LLVMValueRef
+static llvm::Value *
 emit_int_divmod(UPLpgSQL_compile_ctx *ctx,
-				LLVMValueRef lhs, LLVMValueRef rhs,
-				LLVMTypeRef int_type, bool is_div,
+				llvm::Value *lhs, llvm::Value *rhs,
+				llvm::Type *int_type, bool is_div,
 				uint64 min_val)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMValueRef	cmp, result;
-	LLVMBasicBlockRef zero_bb, check_bb, ok_bb;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Value	*cmp, *result;
+	llvm::BasicBlock *zero_bb, *check_bb, *ok_bb;
 
 	zero_bb = expr_append_block(ctx, "div.zero");
 	check_bb = expr_append_block(ctx, "div.check");
 	ok_bb = expr_append_block(ctx, "div.ok");
 
 	/* Check divisor != 0 */
-	cmp = LLVMBuildICmp(builder, LLVMIntEQ, rhs,
-						LLVMConstInt(int_type, 0, false), "div.iszero");
-	LLVMBuildCondBr(builder, cmp, zero_bb, check_bb);
+	cmp = builder->CreateICmpEQ(rhs, llvm::ConstantInt::get(int_type, 0, false), "div.iszero");
+	builder->CreateCondBr(cmp, zero_bb, check_bb);
 
-	LLVMPositionBuilderAtEnd(builder, zero_bb);
+	builder->SetInsertPoint(zero_bb);
 	emit_error_call(ctx, "uplpgsql_rt_div_zero");
 
-	LLVMPositionBuilderAtEnd(builder, check_bb);
+	builder->SetInsertPoint(check_bb);
 
 	if (is_div)
 	{
 		/* Check for MIN / -1 overflow */
-		LLVMValueRef is_min, is_neg1, is_ovf;
-		LLVMBasicBlockRef ovf_bb, div_bb;
+		llvm::Value *is_min, *is_neg1, *is_ovf;
+		llvm::BasicBlock *ovf_bb, *div_bb;
 
 		ovf_bb = expr_append_block(ctx, "div.ovf");
 		div_bb = expr_append_block(ctx, "div.do");
 
-		is_min = LLVMBuildICmp(builder, LLVMIntEQ, lhs,
-			LLVMConstInt(int_type, min_val, false), "is.min");
-		is_neg1 = LLVMBuildICmp(builder, LLVMIntEQ, rhs,
-			LLVMConstInt(int_type, (uint64) -1, true), "is.neg1");
-		is_ovf = LLVMBuildAnd(builder, is_min, is_neg1, "div.ovf.check");
-		LLVMBuildCondBr(builder, is_ovf, ovf_bb, div_bb);
+		is_min = builder->CreateICmpEQ(lhs, llvm::ConstantInt::get(int_type, min_val, false), "is.min");
+		is_neg1 = builder->CreateICmpEQ(rhs, llvm::ConstantInt::get(int_type, (uint64) -1, true), "is.neg1");
+		is_ovf = builder->CreateAnd(is_min, is_neg1, "div.ovf.check");
+		builder->CreateCondBr(is_ovf, ovf_bb, div_bb);
 
-		LLVMPositionBuilderAtEnd(builder, ovf_bb);
+		builder->SetInsertPoint(ovf_bb);
 		emit_error_call(ctx, "uplpgsql_rt_int_overflow");
 
-		LLVMPositionBuilderAtEnd(builder, div_bb);
-		result = LLVMBuildSDiv(builder, lhs, rhs, "div.result");
+		builder->SetInsertPoint(div_bb);
+		result = builder->CreateSDiv(lhs, rhs, "div.result");
 	}
 	else
 	{
@@ -1958,34 +1843,28 @@ emit_int_divmod(UPLpgSQL_compile_ctx *ctx,
 		 * that is never -1 (SREM by 1 is always 0 and cannot trap), then
 		 * select 0 when the real divisor was -1.
 		 */
-		LLVMValueRef	is_neg1,
-						safe_rhs,
-						rem;
+		llvm::Value	*is_neg1,
+						*safe_rhs,
+						*rem;
 
-		is_neg1 = LLVMBuildICmp(builder, LLVMIntEQ, rhs,
-							    LLVMConstInt(int_type, (uint64) -1, true),
-							    "mod.isneg1");
-		safe_rhs = LLVMBuildSelect(builder, is_neg1,
-								   LLVMConstInt(int_type, 1, false), rhs,
-								   "mod.safe.rhs");
-		rem = LLVMBuildSRem(builder, lhs, safe_rhs, "mod.result");
-		result = LLVMBuildSelect(builder, is_neg1,
-								 LLVMConstInt(int_type, 0, false), rem,
-								 "mod.val");
+		is_neg1 = builder->CreateICmpEQ(rhs, llvm::ConstantInt::get(int_type, (uint64) -1, true), "mod.isneg1");
+		safe_rhs = builder->CreateSelect(is_neg1, llvm::ConstantInt::get(int_type, 1, false), rhs, "mod.safe.rhs");
+		rem = builder->CreateSRem(lhs, safe_rhs, "mod.result");
+		result = builder->CreateSelect(is_neg1, llvm::ConstantInt::get(int_type, 0, false), rem, "mod.val");
 	}
 
 	{
-		LLVMBasicBlockRef result_bb = LLVMGetInsertBlock(builder);
+		llvm::BasicBlock *result_bb = builder->GetInsertBlock();
 
-		LLVMBuildBr(builder, ok_bb);
-		LLVMPositionBuilderAtEnd(builder, ok_bb);
+		builder->CreateBr(ok_bb);
+		builder->SetInsertPoint(ok_bb);
 
 		/* Phi from single predecessor (the block where result was computed) */
 		{
-			LLVMValueRef phi;
+			llvm::PHINode *phi;
 
-			phi = LLVMBuildPhi(builder, int_type, "divmod.val");
-			LLVMAddIncoming(phi, &result, &result_bb, 1);
+			phi = builder->CreatePHI(int_type, 1, "divmod.val");
+			phi->addIncoming(result, result_bb);
 			return phi;
 		}
 	}
@@ -1994,54 +1873,51 @@ emit_int_divmod(UPLpgSQL_compile_ctx *ctx,
 /*
  * Emit checked unary minus for iN (errors on MIN value).
  */
-static LLVMValueRef
-emit_int_negate(UPLpgSQL_compile_ctx *ctx, LLVMValueRef arg,
-				LLVMTypeRef int_type, uint64 min_val)
+static llvm::Value *
+emit_int_negate(UPLpgSQL_compile_ctx *ctx, llvm::Value *arg,
+				llvm::Type *int_type, uint64 min_val)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMBasicBlockRef ovf_bb, ok_bb;
-	LLVMValueRef cmp;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::BasicBlock *ovf_bb, *ok_bb;
+	llvm::Value *cmp;
 
 	ovf_bb = expr_append_block(ctx, "neg.ovf");
 	ok_bb = expr_append_block(ctx, "neg.ok");
 
-	cmp = LLVMBuildICmp(builder, LLVMIntEQ, arg,
-						LLVMConstInt(int_type, min_val, false), "neg.ismin");
-	LLVMBuildCondBr(builder, cmp, ovf_bb, ok_bb);
+	cmp = builder->CreateICmpEQ(arg, llvm::ConstantInt::get(int_type, min_val, false), "neg.ismin");
+	builder->CreateCondBr(cmp, ovf_bb, ok_bb);
 
-	LLVMPositionBuilderAtEnd(builder, ovf_bb);
+	builder->SetInsertPoint(ovf_bb);
 	emit_error_call(ctx, "uplpgsql_rt_int_overflow");
 
-	LLVMPositionBuilderAtEnd(builder, ok_bb);
-	return LLVMBuildNeg(builder, arg, "neg.result");
+	builder->SetInsertPoint(ok_bb);
+	return builder->CreateNeg(arg, "neg.result");
 }
 
 /*
  * Emit abs for iN (errors on MIN value).
  */
-static LLVMValueRef
-emit_int_abs(UPLpgSQL_compile_ctx *ctx, LLVMValueRef arg,
-			 LLVMTypeRef int_type, uint64 min_val)
+static llvm::Value *
+emit_int_abs(UPLpgSQL_compile_ctx *ctx, llvm::Value *arg,
+			 llvm::Type *int_type, uint64 min_val)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMBasicBlockRef ovf_bb, ok_bb;
-	LLVMValueRef cmp, neg;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::BasicBlock *ovf_bb, *ok_bb;
+	llvm::Value *cmp, *neg;
 
 	ovf_bb = expr_append_block(ctx, "abs.ovf");
 	ok_bb = expr_append_block(ctx, "abs.ok");
 
-	cmp = LLVMBuildICmp(builder, LLVMIntEQ, arg,
-						LLVMConstInt(int_type, min_val, false), "abs.ismin");
-	LLVMBuildCondBr(builder, cmp, ovf_bb, ok_bb);
+	cmp = builder->CreateICmpEQ(arg, llvm::ConstantInt::get(int_type, min_val, false), "abs.ismin");
+	builder->CreateCondBr(cmp, ovf_bb, ok_bb);
 
-	LLVMPositionBuilderAtEnd(builder, ovf_bb);
+	builder->SetInsertPoint(ovf_bb);
 	emit_error_call(ctx, "uplpgsql_rt_int_overflow");
 
-	LLVMPositionBuilderAtEnd(builder, ok_bb);
-	neg = LLVMBuildNeg(builder, arg, "abs.neg");
-	cmp = LLVMBuildICmp(builder, LLVMIntSGE, arg,
-						LLVMConstInt(int_type, 0, false), "abs.cmp");
-	return LLVMBuildSelect(builder, cmp, arg, neg, "abs.val");
+	builder->SetInsertPoint(ok_bb);
+	neg = builder->CreateNeg(arg, "abs.neg");
+	cmp = builder->CreateICmpSGE(arg, llvm::ConstantInt::get(int_type, 0, false), "abs.cmp");
+	return builder->CreateSelect(cmp, arg, neg, "abs.val");
 }
 
 
@@ -2053,18 +1929,18 @@ emit_int_abs(UPLpgSQL_compile_ctx *ctx, LLVMValueRef arg,
 /*
  * Compile an expression that produces a Datum-width result (int4/int8/float8).
  *
- * Returns an LLVMValueRef in the native type (i32, i64, or double).
+ * Returns an llvm::Value * in the native type (i32, i64, or double).
  * Sets *result_type to the type class of the result.
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-							LLVMValueRef estate_ref,
+							llvm::Value *estate_ref,
 							ExprTypeClass *result_type)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i32 = ctx->types[UPLPGSQL_INT32];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
-	LLVMTypeRef		dbl = ctx->types[UPLPGSQL_DOUBLE];
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i32 = ctx->types[UPLPGSQL_INT32];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type		*dbl = ctx->types[UPLPGSQL_DOUBLE];
 
 	*result_type = uplpgsql_classify_expr(expr);
 
@@ -2077,11 +1953,11 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				switch (*result_type)
 				{
 					case EXPR_TYPE_INT4:
-						return LLVMConstInt(i32, DatumGetInt32(c->constvalue), true);
+						return llvm::ConstantInt::get(i32, DatumGetInt32(c->constvalue), true);
 					case EXPR_TYPE_INT8:
-						return LLVMConstInt(i64, DatumGetInt64(c->constvalue), true);
+						return llvm::ConstantInt::get(i64, DatumGetInt64(c->constvalue), true);
 					case EXPR_TYPE_FLOAT8:
-						return LLVMConstReal(dbl, DatumGetFloat8(c->constvalue));
+						return llvm::ConstantFP::get(dbl, DatumGetFloat8(c->constvalue));
 					default:
 						elog(ERROR, "uplpgsql: unexpected const type in datum compilation");
 						return NULL;
@@ -2092,20 +1968,20 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			{
 				Param	   *p = (Param *) expr;
 				int			dno = p->paramid - 1;
-				LLVMValueRef datum;
+				llvm::Value *datum;
 
 				datum = uplpgsql_emit_load_param_datum(ctx, estate_ref, dno);
 
 				switch (*result_type)
 				{
 					case EXPR_TYPE_INT4:
-						return LLVMBuildTrunc(builder, datum, i32, "int4.val");
+						return builder->CreateTrunc(datum, i32, "int4.val");
 					case EXPR_TYPE_INT8:
 						/* Datum is already i64 for int8 */
 						return datum;
 					case EXPR_TYPE_FLOAT8:
 						/* Datum contains the double bits; bitcast i64 → double */
-						return LLVMBuildBitCast(builder, datum, dbl, "float8.val");
+						return builder->CreateBitCast(datum, dbl, "float8.val");
 					default:
 						elog(ERROR, "uplpgsql: unexpected param type in datum compilation");
 						return NULL;
@@ -2123,7 +1999,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				if (list_length(op->args) == 2)
 				{
 					ExprTypeClass ltype, rtype;
-					LLVMValueRef lhs, rhs;
+					llvm::Value *lhs, *rhs;
 
 					lhs = uplpgsql_compile_expr_datum(ctx,
 						(Expr *) linitial(op->args), estate_ref, &ltype);
@@ -2133,13 +2009,13 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					/* --- int4 arithmetic --- */
 					if (fid == F_INT4PL)
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.sadd.with.overflow.i32", i32);
+							llvm::Intrinsic::sadd_with_overflow, i32);
 					if (fid == F_INT4MI)
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.ssub.with.overflow.i32", i32);
+							llvm::Intrinsic::ssub_with_overflow, i32);
 					if (fid == F_INT4MUL)
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.smul.with.overflow.i32", i32);
+							llvm::Intrinsic::smul_with_overflow, i32);
 					if (fid == F_INT4DIV)
 						return emit_int_divmod(ctx, lhs, rhs, i32, true,
 							(uint32) PG_INT32_MIN);
@@ -2149,13 +2025,13 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					/* --- int8 arithmetic --- */
 					if (fid == F_INT8PL)
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.sadd.with.overflow.i64", i64);
+							llvm::Intrinsic::sadd_with_overflow, i64);
 					if (fid == F_INT8MI)
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.ssub.with.overflow.i64", i64);
+							llvm::Intrinsic::ssub_with_overflow, i64);
 					if (fid == F_INT8MUL)
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.smul.with.overflow.i64", i64);
+							llvm::Intrinsic::smul_with_overflow, i64);
 					if (fid == F_INT8DIV)
 						return emit_int_divmod(ctx, lhs, rhs, i64, true,
 							(uint64) PG_INT64_MIN);
@@ -2167,36 +2043,36 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					{
 						/* Widen int4 operand to int8 */
 						if (ltype == EXPR_TYPE_INT4)
-							lhs = LLVMBuildSExt(builder, lhs, i64, "widen.l");
+							lhs = builder->CreateSExt(lhs, i64, "widen.l");
 						if (rtype == EXPR_TYPE_INT4)
-							rhs = LLVMBuildSExt(builder, rhs, i64, "widen.r");
+							rhs = builder->CreateSExt(rhs, i64, "widen.r");
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.sadd.with.overflow.i64", i64);
+							llvm::Intrinsic::sadd_with_overflow, i64);
 					}
 					if (fid == F_INT84MI || fid == F_INT48MI)
 					{
 						if (ltype == EXPR_TYPE_INT4)
-							lhs = LLVMBuildSExt(builder, lhs, i64, "widen.l");
+							lhs = builder->CreateSExt(lhs, i64, "widen.l");
 						if (rtype == EXPR_TYPE_INT4)
-							rhs = LLVMBuildSExt(builder, rhs, i64, "widen.r");
+							rhs = builder->CreateSExt(rhs, i64, "widen.r");
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.ssub.with.overflow.i64", i64);
+							llvm::Intrinsic::ssub_with_overflow, i64);
 					}
 					if (fid == F_INT84MUL || fid == F_INT48MUL)
 					{
 						if (ltype == EXPR_TYPE_INT4)
-							lhs = LLVMBuildSExt(builder, lhs, i64, "widen.l");
+							lhs = builder->CreateSExt(lhs, i64, "widen.l");
 						if (rtype == EXPR_TYPE_INT4)
-							rhs = LLVMBuildSExt(builder, rhs, i64, "widen.r");
+							rhs = builder->CreateSExt(rhs, i64, "widen.r");
 						return emit_int_arith_checked(ctx, lhs, rhs,
-							"llvm.smul.with.overflow.i64", i64);
+							llvm::Intrinsic::smul_with_overflow, i64);
 					}
 					if (fid == F_INT84DIV || fid == F_INT48DIV)
 					{
 						if (ltype == EXPR_TYPE_INT4)
-							lhs = LLVMBuildSExt(builder, lhs, i64, "widen.l");
+							lhs = builder->CreateSExt(lhs, i64, "widen.l");
 						if (rtype == EXPR_TYPE_INT4)
-							rhs = LLVMBuildSExt(builder, rhs, i64, "widen.r");
+							rhs = builder->CreateSExt(rhs, i64, "widen.r");
 						return emit_int_divmod(ctx, lhs, rhs, i64, true,
 							(uint64) PG_INT64_MIN);
 					}
@@ -2218,7 +2094,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				if (list_length(op->args) == 1)
 				{
 					ExprTypeClass atype;
-					LLVMValueRef arg;
+					llvm::Value *arg;
 
 					arg = uplpgsql_compile_expr_datum(ctx,
 						(Expr *) linitial(op->args), estate_ref, &atype);
@@ -2230,7 +2106,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 						return emit_int_negate(ctx, arg, i64,
 							(uint64) PG_INT64_MIN);
 					if (fid == F_FLOAT8UM)
-						return LLVMBuildFNeg(builder, arg, "f8.neg");
+						return builder->CreateFNeg(arg, "f8.neg");
 				}
 
 				elog(ERROR, "uplpgsql: unhandled OpExpr funcid %u in datum compilation",
@@ -2242,7 +2118,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			{
 				FuncExpr   *f = (FuncExpr *) expr;
 				ExprTypeClass atype;
-				LLVMValueRef arg;
+				llvm::Value *arg;
 
 				/*
 				 * numeric const → float8: evaluate the cast at compile time.
@@ -2255,9 +2131,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					Const *c = (Const *) linitial(f->args);
 
 					Assert(IsA(c, Const));
-					return LLVMConstReal(dbl,
-						DatumGetFloat8(OidFunctionCall1(F_FLOAT8_NUMERIC,
-														c->constvalue)));
+					return llvm::ConstantFP::get(dbl, DatumGetFloat8(OidFunctionCall1(F_FLOAT8_NUMERIC, c->constvalue)));
 				}
 
 				/* Two-arg: pow(x, y) → llvm.pow.f64 */
@@ -2265,7 +2139,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					f->funcid == F_POW_FLOAT8_FLOAT8 ||
 					f->funcid == F_POWER_FLOAT8_FLOAT8)
 				{
-					LLVMValueRef lhs, rhs;
+					llvm::Value *lhs, *rhs;
 					ExprTypeClass ltype, rtype;
 
 					lhs = uplpgsql_compile_expr_datum(ctx,
@@ -2274,19 +2148,16 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 						(Expr *) lsecond(f->args), estate_ref, &rtype);
 
 					{
-						unsigned	id;
-						LLVMValueRef fn, args[2];
-						LLVMTypeRef ovf_types[] = { dbl };
+						llvm::Function *fn;
+						llvm::Value *args[2];
+						llvm::Type *ovf_types[] = { dbl };
 
-						id = LLVMLookupIntrinsicID("llvm.pow", 8);
-						fn = LLVMGetIntrinsicDeclaration(ctx->module, id,
-														 ovf_types, 1);
+						fn = llvm::Intrinsic::getOrInsertDeclaration(
+							ctx->module.get(), llvm::Intrinsic::pow,
+							ovf_types);
 						args[0] = lhs;
 						args[1] = rhs;
-						return LLVMBuildCall2(builder,
-							LLVMIntrinsicGetType(ctx->context, id,
-												  ovf_types, 1),
-							fn, args, 2, "pow");
+						return builder->CreateCall(fn, args, "pow");
 					}
 				}
 
@@ -2299,12 +2170,11 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					return emit_int_abs(ctx, arg, i64, (uint64) PG_INT64_MIN);
 				if (f->funcid == F_FLOAT8ABS)
 				{
-					LLVMValueRef neg, cmp;
+					llvm::Value *neg, *cmp;
 
-					neg = LLVMBuildFNeg(builder, arg, "fabs.neg");
-					cmp = LLVMBuildFCmp(builder, LLVMRealOGE, arg,
-						LLVMConstReal(dbl, 0.0), "fabs.cmp");
-					return LLVMBuildSelect(builder, cmp, arg, neg, "fabs.val");
+					neg = builder->CreateFNeg(arg, "fabs.neg");
+					cmp = builder->CreateFCmpOGE(arg, llvm::ConstantFP::get(dbl, 0.0), "fabs.cmp");
+					return builder->CreateSelect(cmp, arg, neg, "fabs.val");
 				}
 
 				/* Single-arg float8 math → LLVM intrinsics */
@@ -2314,49 +2184,44 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					f->funcid == F_DEXP || f->funcid == F_EXP_FLOAT8 ||
 					f->funcid == F_DLOG1 || f->funcid == F_LN_FLOAT8 ||
 					f->funcid == F_SIN || f->funcid == F_COS)
-				{
-					const char *iname;
-					unsigned	id;
-					LLVMValueRef fn, iargs[1];
-					LLVMTypeRef ovf_types[] = { dbl };
+				{						llvm::Intrinsic::ID iid;
+						llvm::Function *fn;
+						llvm::Value *iargs[1];
+						llvm::Type *ovf_types[] = { dbl };
 
-					if (f->funcid == F_DSQRT || f->funcid == F_SQRT_FLOAT8)
-						iname = "llvm.sqrt";
-					else if (f->funcid == F_CEIL_FLOAT8 ||
-							 f->funcid == F_CEILING_FLOAT8)
-						iname = "llvm.ceil";
-					else if (f->funcid == F_FLOOR_FLOAT8)
-						iname = "llvm.floor";
-					else if (f->funcid == F_DEXP || f->funcid == F_EXP_FLOAT8)
-						iname = "llvm.exp";
-					else if (f->funcid == F_DLOG1 || f->funcid == F_LN_FLOAT8)
-						iname = "llvm.log";
-					else if (f->funcid == F_SIN)
-						iname = "llvm.sin";
-					else
-						iname = "llvm.cos";
+						if (f->funcid == F_DSQRT || f->funcid == F_SQRT_FLOAT8)
+							iid = llvm::Intrinsic::sqrt;
+						else if (f->funcid == F_CEIL_FLOAT8 ||
+								 f->funcid == F_CEILING_FLOAT8)
+							iid = llvm::Intrinsic::ceil;
+						else if (f->funcid == F_FLOOR_FLOAT8)
+							iid = llvm::Intrinsic::floor;
+						else if (f->funcid == F_DEXP || f->funcid == F_EXP_FLOAT8)
+							iid = llvm::Intrinsic::exp;
+						else if (f->funcid == F_DLOG1 || f->funcid == F_LN_FLOAT8)
+							iid = llvm::Intrinsic::log;
+						else if (f->funcid == F_SIN)
+							iid = llvm::Intrinsic::sin;
+						else
+							iid = llvm::Intrinsic::cos;
 
-					id = LLVMLookupIntrinsicID(iname, strlen(iname));
-					fn = LLVMGetIntrinsicDeclaration(ctx->module, id,
-													  ovf_types, 1);
-					iargs[0] = arg;
-					return LLVMBuildCall2(builder,
-						LLVMIntrinsicGetType(ctx->context, id,
-											  ovf_types, 1),
-						fn, iargs, 1, "math");
+						fn = llvm::Intrinsic::getOrInsertDeclaration(
+							ctx->module.get(), iid, ovf_types);
+						iargs[0] = arg;
+						return builder->CreateCall(fn, iargs, "math");
 				}
 
 				/* int4/int2 → float8: sitofp i32 → double */
 				if (f->funcid == F_FLOAT8_INT4 || f->funcid == F_FLOAT8_INT2)
-					return LLVMBuildSIToFP(builder, arg, dbl, "i4tod");
+					return builder->CreateSIToFP(arg, dbl, "i4tod");
 
 				/* int8 → float8: sitofp i64 → double */
 				if (f->funcid == F_FLOAT8_INT8)
-					return LLVMBuildSIToFP(builder, arg, dbl, "i8tod");
+					return builder->CreateSIToFP(arg, dbl, "i8tod");
 
 				/* float4 → float8: fpext float → double */
 				if (f->funcid == F_FLOAT8_FLOAT4)
-					return LLVMBuildFPExt(builder, arg, dbl, "f4tod");
+					return builder->CreateFPExt(arg, dbl, "f4tod");
 
 				elog(ERROR, "uplpgsql: unhandled FuncExpr funcid %u in datum compilation",
 					 f->funcid);
@@ -2374,7 +2239,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				Expr		   *idx_expr = (Expr *) linitial(sbsref->refupperindexpr);
 				ExprTypeClass	idx_class;
 				int				array_dno = array_param->paramid - 1;
-				LLVMValueRef	idx_val;
+				llvm::Value	*idx_val;
 				UPLpgSQL_native_array *na;
 
 				/* Compile the subscript index to native i32 */
@@ -2398,34 +2263,28 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					 * Index relative to the array's lower bound, which need
 					 * not be 1 ('[2:3]={9,10}').
 					 */
-					LLVMValueRef data, lb, idx0, gep, result;
+					llvm::Value *data, *lb, *idx0, *gep, *result;
 
-					data = LLVMBuildLoad2(builder, ctx->types[UPLPGSQL_PTR],
-										  na->data_ptr, "na.data");
-					lb = LLVMBuildLoad2(builder, i32, na->lb_ptr, "na.lb");
-					idx0 = LLVMBuildSub(builder, idx_val, lb, "idx0");
-					gep = LLVMBuildGEP2(builder, na->llvm_elemtype,
-										data, &idx0, 1, "na.elem_ptr");
-					result = LLVMBuildLoad2(builder, na->llvm_elemtype,
-											gep, "na.elem");
+					data = builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->data_ptr, "na.data");
+					lb = builder->CreateLoad(i32, na->lb_ptr, "na.lb");
+					idx0 = builder->CreateSub(idx_val, lb, "idx0");
+					gep = builder->CreateGEP(na->llvm_elemtype, data, {idx0}, "na.elem_ptr");
+					result = builder->CreateLoad(na->llvm_elemtype, gep, "na.elem");
 					return result;
 				}
 
 				/* Standard PG array path */
 				{
-					LLVMValueRef	isnull_ptr, elem_datum;
-					LLVMBasicBlockRef entry_bb;
+					llvm::Value	*isnull_ptr, *elem_datum;
+					llvm::BasicBlock *entry_bb;
 
 					/* Alloca for isNull output (must be in entry block) */
-					entry_bb = LLVMGetEntryBasicBlock(ctx->function);
+					entry_bb = &ctx->function->getEntryBlock();
 					{
-						LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
+						llvm::IRBuilder<> tmp(*ctx->context);
 
-						LLVMPositionBuilderBefore(tmp,
-							LLVMGetFirstInstruction(entry_bb));
-						isnull_ptr = LLVMBuildAlloca(tmp,
-							ctx->types[UPLPGSQL_INT1], "sref_isnull");
-						LLVMDisposeBuilder(tmp);
+						tmp.SetInsertPoint(entry_bb, entry_bb->begin());
+						isnull_ptr = tmp.CreateAlloca(ctx->types[UPLPGSQL_INT1], nullptr, "sref_isnull");
 					}
 
 					/* Call RT_ARRAY_GET_ELEMENT with compile-time type info */
@@ -2434,10 +2293,9 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 						resolve_array_type_info(ctx, array_dno, &ati);
 						{
-							LLVMValueRef args[] = {
+							llvm::Value *args[] = {
 								estate_ref,
-								LLVMConstInt(ctx->types[UPLPGSQL_INT32],
-											 array_dno, false),
+								llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], array_dno, false),
 								idx_val,
 								ati.typlen_val,
 								ati.elmlen_val,
@@ -2445,10 +2303,7 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 								ati.elmalign_val,
 								isnull_ptr
 							};
-							elem_datum = LLVMBuildCall2(ctx->builder,
-								ctx->rt_fntypes[RT_ARRAY_GET_ELEMENT],
-								ctx->rt_funcs[RT_ARRAY_GET_ELEMENT],
-								args, 8, "arr_elem");
+							elem_datum = ctx->builder->CreateCall(ctx->rt_funcs[RT_ARRAY_GET_ELEMENT], args, "arr_elem");
 						}
 					}
 
@@ -2457,15 +2312,14 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					 * already verified the element type is a known Tier 1 type.
 					 */
 					if (*result_type == EXPR_TYPE_INT4)
-						return LLVMBuildTrunc(builder, elem_datum, i32, "arr.i4");
+						return builder->CreateTrunc(elem_datum, i32, "arr.i4");
 					if (*result_type == EXPR_TYPE_INT8)
 						return elem_datum;
 					if (*result_type == EXPR_TYPE_FLOAT8)
-						return LLVMBuildBitCast(builder, elem_datum, dbl, "arr.f8");
+						return builder->CreateBitCast(elem_datum, dbl, "arr.f8");
 
 					/* BOOL: trunc i64 → i1 */
-					return LLVMBuildTrunc(builder, elem_datum,
-										  ctx->types[UPLPGSQL_INT1], "arr.bool");
+					return builder->CreateTrunc(elem_datum, ctx->types[UPLPGSQL_INT1], "arr.bool");
 				}
 			}
 
@@ -2478,15 +2332,15 @@ uplpgsql_compile_expr_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 /*
  * Compile a boolean expression tree to LLVM IR.
- * Returns an LLVMValueRef of type i1.
+ * Returns an llvm::Value * of type i1.
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-						   LLVMValueRef estate_ref)
+						   llvm::Value *estate_ref)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i1 = ctx->types[UPLPGSQL_INT1];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i1 = ctx->types[UPLPGSQL_INT1];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
 
 	switch (nodeTag(expr))
 	{
@@ -2494,65 +2348,64 @@ uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			{
 				Const *c = (Const *) expr;
 
-				return LLVMConstInt(i1, DatumGetBool(c->constvalue) ? 1 : 0,
-								   false);
+				return llvm::ConstantInt::get(i1, DatumGetBool(c->constvalue) ? 1 : 0, false);
 			}
 
 		case T_Param:
 			{
 				Param	   *p = (Param *) expr;
 				int			dno = p->paramid - 1;
-				LLVMValueRef datum;
+				llvm::Value *datum;
 
 				datum = uplpgsql_emit_load_param_datum(ctx, estate_ref, dno);
-				return LLVMBuildTrunc(builder, datum, i1, "bool.val");
+				return builder->CreateTrunc(datum, i1, "bool.val");
 			}
 
 		case T_OpExpr:
 			{
 				OpExpr	   *op = (OpExpr *) expr;
 				Oid			fid = op->opfuncid;
-				LLVMIntPredicate int_pred = (LLVMIntPredicate) 0;
+				llvm::CmpInst::Predicate int_pred = (llvm::CmpInst::Predicate) 0;
 
 				bool		is_float_cmp = false;
 				bool		is_cross_cmp = false;
 
 				/* Determine comparison predicate */
 				/* int4 comparisons */
-				if (fid == F_INT4EQ) int_pred = LLVMIntEQ;
-				else if (fid == F_INT4NE) int_pred = LLVMIntNE;
-				else if (fid == F_INT4LT) int_pred = LLVMIntSLT;
-				else if (fid == F_INT4LE) int_pred = LLVMIntSLE;
-				else if (fid == F_INT4GT) int_pred = LLVMIntSGT;
-				else if (fid == F_INT4GE) int_pred = LLVMIntSGE;
+				if (fid == F_INT4EQ) int_pred = llvm::CmpInst::ICMP_EQ;
+				else if (fid == F_INT4NE) int_pred = llvm::CmpInst::ICMP_NE;
+				else if (fid == F_INT4LT) int_pred = llvm::CmpInst::ICMP_SLT;
+				else if (fid == F_INT4LE) int_pred = llvm::CmpInst::ICMP_SLE;
+				else if (fid == F_INT4GT) int_pred = llvm::CmpInst::ICMP_SGT;
+				else if (fid == F_INT4GE) int_pred = llvm::CmpInst::ICMP_SGE;
 				/* int8 comparisons */
-				else if (fid == F_INT8EQ) int_pred = LLVMIntEQ;
-				else if (fid == F_INT8NE) int_pred = LLVMIntNE;
-				else if (fid == F_INT8LT) int_pred = LLVMIntSLT;
-				else if (fid == F_INT8GT) int_pred = LLVMIntSGT;
-				else if (fid == F_INT8LE) int_pred = LLVMIntSLE;
-				else if (fid == F_INT8GE) int_pred = LLVMIntSGE;
+				else if (fid == F_INT8EQ) int_pred = llvm::CmpInst::ICMP_EQ;
+				else if (fid == F_INT8NE) int_pred = llvm::CmpInst::ICMP_NE;
+				else if (fid == F_INT8LT) int_pred = llvm::CmpInst::ICMP_SLT;
+				else if (fid == F_INT8GT) int_pred = llvm::CmpInst::ICMP_SGT;
+				else if (fid == F_INT8LE) int_pred = llvm::CmpInst::ICMP_SLE;
+				else if (fid == F_INT8GE) int_pred = llvm::CmpInst::ICMP_SGE;
 				/* int4↔int8 cross-type comparisons */
 				else if (fid == F_INT84EQ || fid == F_INT48EQ)
-					{ int_pred = LLVMIntEQ; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_EQ; is_cross_cmp = true; }
 				else if (fid == F_INT84NE || fid == F_INT48NE)
-					{ int_pred = LLVMIntNE; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_NE; is_cross_cmp = true; }
 				else if (fid == F_INT84LT)
-					{ int_pred = LLVMIntSLT; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SLT; is_cross_cmp = true; }
 				else if (fid == F_INT84GT)
-					{ int_pred = LLVMIntSGT; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SGT; is_cross_cmp = true; }
 				else if (fid == F_INT84LE)
-					{ int_pred = LLVMIntSLE; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SLE; is_cross_cmp = true; }
 				else if (fid == F_INT84GE)
-					{ int_pred = LLVMIntSGE; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SGE; is_cross_cmp = true; }
 				else if (fid == F_INT48LT)
-					{ int_pred = LLVMIntSLT; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SLT; is_cross_cmp = true; }
 				else if (fid == F_INT48GT)
-					{ int_pred = LLVMIntSGT; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SGT; is_cross_cmp = true; }
 				else if (fid == F_INT48LE)
-					{ int_pred = LLVMIntSLE; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SLE; is_cross_cmp = true; }
 				else if (fid == F_INT48GE)
-					{ int_pred = LLVMIntSGE; is_cross_cmp = true; }
+					{ int_pred = llvm::CmpInst::ICMP_SGE; is_cross_cmp = true; }
 				/*
 				 * float8 comparisons: emit_float_cmp() picks the form from
 				 * the funcid, since none of them is a plain LLVM predicate —
@@ -2563,13 +2416,13 @@ uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 						 fid == F_FLOAT8GT || fid == F_FLOAT8GE)
 					is_float_cmp = true;
 				/* bool comparisons */
-				else if (fid == F_BOOLEQ) int_pred = LLVMIntEQ;
-				else if (fid == F_BOOLNE) int_pred = LLVMIntNE;
+				else if (fid == F_BOOLEQ) int_pred = llvm::CmpInst::ICMP_EQ;
+				else if (fid == F_BOOLNE) int_pred = llvm::CmpInst::ICMP_NE;
 
 				if (is_float_cmp)
 				{
 					ExprTypeClass lt, rt;
-					LLVMValueRef lhs, rhs;
+					llvm::Value *lhs, *rhs;
 
 					lhs = uplpgsql_compile_expr_datum(ctx,
 						(Expr *) linitial(op->args), estate_ref, &lt);
@@ -2583,20 +2436,19 @@ uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					/* Check if we're comparing booleans */
 					if (fid == F_BOOLEQ || fid == F_BOOLNE)
 					{
-						LLVMValueRef lhs, rhs;
+						llvm::Value *lhs, *rhs;
 
 						lhs = uplpgsql_compile_expr_bool(ctx,
 							(Expr *) linitial(op->args), estate_ref);
 						rhs = uplpgsql_compile_expr_bool(ctx,
 							(Expr *) lsecond(op->args), estate_ref);
-						return LLVMBuildICmp(builder, int_pred, lhs, rhs,
-											 "boolcmp.result");
+						return builder->CreateICmp(int_pred, lhs, rhs, "boolcmp.result");
 					}
 
 					/* Integer comparison */
 					{
 						ExprTypeClass lt, rt;
-						LLVMValueRef lhs, rhs;
+						llvm::Value *lhs, *rhs;
 
 						lhs = uplpgsql_compile_expr_datum(ctx,
 							(Expr *) linitial(op->args), estate_ref, &lt);
@@ -2607,15 +2459,12 @@ uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 						if (is_cross_cmp)
 						{
 							if (lt == EXPR_TYPE_INT4)
-								lhs = LLVMBuildSExt(builder, lhs, i64,
-													"widen.l");
+								lhs = builder->CreateSExt(lhs, i64, "widen.l");
 							if (rt == EXPR_TYPE_INT4)
-								rhs = LLVMBuildSExt(builder, rhs, i64,
-													"widen.r");
+								rhs = builder->CreateSExt(rhs, i64, "widen.r");
 						}
 
-						return LLVMBuildICmp(builder, int_pred, lhs, rhs,
-											 "icmp.result");
+						return builder->CreateICmp(int_pred, lhs, rhs, "icmp.result");
 					}
 				}
 
@@ -2631,33 +2480,31 @@ uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 				if (b->boolop == NOT_EXPR)
 				{
-					LLVMValueRef arg = uplpgsql_compile_expr_bool(ctx,
+					llvm::Value *arg = uplpgsql_compile_expr_bool(ctx,
 						(Expr *) linitial(b->args), estate_ref);
-					return LLVMBuildNot(builder, arg, "not.result");
+					return builder->CreateNot(arg, "not.result");
 				}
 				else if (b->boolop == AND_EXPR)
 				{
-					LLVMValueRef result = LLVMConstInt(i1, 1, false);
+					llvm::Value *result = llvm::ConstantInt::get(i1, 1, false);
 
 					foreach(lc, b->args)
 					{
-						LLVMValueRef arg = uplpgsql_compile_expr_bool(ctx,
+						llvm::Value *arg = uplpgsql_compile_expr_bool(ctx,
 							(Expr *) lfirst(lc), estate_ref);
-						result = LLVMBuildAnd(builder, result, arg,
-											  "and.result");
+						result = builder->CreateAnd(result, arg, "and.result");
 					}
 					return result;
 				}
 				else if (b->boolop == OR_EXPR)
 				{
-					LLVMValueRef result = LLVMConstInt(i1, 0, false);
+					llvm::Value *result = llvm::ConstantInt::get(i1, 0, false);
 
 					foreach(lc, b->args)
 					{
-						LLVMValueRef arg = uplpgsql_compile_expr_bool(ctx,
+						llvm::Value *arg = uplpgsql_compile_expr_bool(ctx,
 							(Expr *) lfirst(lc), estate_ref);
-						result = LLVMBuildOr(builder, result, arg,
-											 "or.result");
+						result = builder->CreateOr(result, arg, "or.result");
 					}
 					return result;
 				}
@@ -2945,11 +2792,11 @@ fmgr_expr_wants_alloc_scope(UPLpgSQL_compile_ctx *ctx, Expr *expr)
  * Emit IR to load a variable's Datum value for use as a function argument.
  * Returns the Datum as i64.
  */
-static LLVMValueRef
+static llvm::Value *
 fmgr_load_arg_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-					LLVMValueRef estate_ref)
+					llvm::Value *estate_ref)
 {
-	LLVMTypeRef i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type *i64 = ctx->types[UPLPGSQL_INT64];
 
 	switch (nodeTag(expr))
 	{
@@ -2958,7 +2805,7 @@ fmgr_load_arg_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				Const *c = (Const *) expr;
 
 				if (c->constisnull)
-					return LLVMConstInt(i64, 0, false);
+					return llvm::ConstantInt::get(i64, 0, false);
 
 				/*
 				 * Embed the Datum value as an i64 constant.
@@ -2987,10 +2834,10 @@ fmgr_load_arg_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					persistent = datumCopy(c->constvalue, false, c->constlen);
 					MemoryContextSwitchTo(oldcxt);
 
-					return LLVMConstInt(i64, (uint64) persistent, false);
+					return llvm::ConstantInt::get(i64, (uint64) persistent, false);
 				}
 
-				return LLVMConstInt(i64, (uint64) c->constvalue, false);
+				return llvm::ConstantInt::get(i64, (uint64) c->constvalue, false);
 			}
 
 		case T_Param:
@@ -3018,11 +2865,11 @@ fmgr_load_arg_datum(UPLpgSQL_compile_ctx *ctx, Expr *expr,
  * Emit IR to check if a variable is NULL (for strict function handling).
  * Returns i1 (true if NULL).
  */
-static LLVMValueRef
+static llvm::Value *
 fmgr_load_arg_isnull(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-					  LLVMValueRef estate_ref)
+					  llvm::Value *estate_ref)
 {
-	LLVMTypeRef i1 = ctx->types[UPLPGSQL_INT1];
+	llvm::Type *i1 = ctx->types[UPLPGSQL_INT1];
 
 	switch (nodeTag(expr))
 	{
@@ -3030,7 +2877,7 @@ fmgr_load_arg_isnull(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			{
 				Const *c = (Const *) expr;
 
-				return LLVMConstInt(i1, c->constisnull ? 1 : 0, false);
+				return llvm::ConstantInt::get(i1, c->constisnull ? 1 : 0, false);
 			}
 
 		case T_Param:
@@ -3047,7 +2894,7 @@ fmgr_load_arg_isnull(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 		default:
 			/* Sub-expressions: not null (function call results handled separately) */
-			return LLVMConstInt(i1, 0, false);
+			return llvm::ConstantInt::get(i1, 0, false);
 	}
 }
 
@@ -3060,9 +2907,9 @@ fmgr_load_arg_isnull(UPLpgSQL_compile_ctx *ctx, Expr *expr,
  *
  * Returns the result as Datum (i64).
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_compile_expr_fmgr(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-						    LLVMValueRef estate_ref)
+						    llvm::Value *estate_ref)
 {
 	return uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref, NULL);
 }
@@ -3071,21 +2918,21 @@ uplpgsql_compile_expr_fmgr(UPLpgSQL_compile_ctx *ctx, Expr *expr,
  * Full variant that also returns the result's isnull flag (i1).
  * If isnull_out is NULL, isnull tracking is skipped (pass-by-value path).
  */
-static LLVMValueRef
+static llvm::Value *
 uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
-								LLVMValueRef estate_ref,
-								LLVMValueRef *isnull_out)
+								llvm::Value *estate_ref,
+								llvm::Value **isnull_out)
 {
-	LLVMBuilderRef	builder = ctx->builder;
-	LLVMTypeRef		i8 = ctx->types[UPLPGSQL_INT8];
-	LLVMTypeRef		i16 = ctx->types[UPLPGSQL_INT16];
-	LLVMTypeRef		i32 = ctx->types[UPLPGSQL_INT32];
-	LLVMTypeRef		i64 = ctx->types[UPLPGSQL_INT64];
-	LLVMTypeRef		ptr = ctx->types[UPLPGSQL_PTR];
-	LLVMTypeRef		i1 = ctx->types[UPLPGSQL_INT1];
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type		*i8 = ctx->types[UPLPGSQL_INT8];
+	llvm::Type		*i16 = ctx->types[UPLPGSQL_INT16];
+	llvm::Type		*i32 = ctx->types[UPLPGSQL_INT32];
+	llvm::Type		*i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::Type		*ptr = ctx->types[UPLPGSQL_PTR];
+	llvm::Type		*i1 = ctx->types[UPLPGSQL_INT1];
 
 	if (isnull_out)
-		*isnull_out = LLVMConstInt(i1, 0, false);  /* default: not null */
+		*isnull_out = llvm::ConstantInt::get(i1, 0, false);  /* default: not null */
 
 	switch (nodeTag(expr))
 	{
@@ -3094,7 +2941,7 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				Const *c = (Const *) expr;
 
 				if (isnull_out && c->constisnull)
-					*isnull_out = LLVMConstInt(i1, 1, false);
+					*isnull_out = llvm::ConstantInt::get(i1, 1, false);
 				return fmgr_load_arg_datum(ctx, expr, estate_ref);
 			}
 
@@ -3133,7 +2980,7 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 
 				if (b->boolop == NOT_EXPR)
 				{
-					LLVMValueRef arg, arg_isnull = NULL, b1, notv;
+					llvm::Value *arg, *arg_isnull = NULL, *b1, *notv;
 
 					arg = uplpgsql_compile_expr_fmgr_full(ctx,
 						(Expr *) linitial(b->args), estate_ref, &arg_isnull);
@@ -3142,62 +2989,49 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					/* NOT NULL is NULL: nullness passes straight through */
 					if (isnull_out)
 						*isnull_out = arg_isnull;
-					b1 = LLVMBuildTrunc(builder, arg, i1, "fmgr.not.in");
-					notv = LLVMBuildNot(builder, b1, "fmgr.not");
-					return LLVMBuildZExt(builder, notv, i64, "fmgr.not.datum");
+					b1 = builder->CreateTrunc(arg, i1, "fmgr.not.in");
+					notv = builder->CreateNot(b1, "fmgr.not");
+					return builder->CreateZExt(notv, i64, "fmgr.not.datum");
 				}
 				else
 				{
 					bool			is_and = (b->boolop == AND_EXPR);
-					LLVMValueRef	result = LLVMConstInt(i1, is_and ? 1 : 0,
-														  false);
-					LLVMValueRef	any_null = LLVMConstInt(i1, 0, false);
-					LLVMValueRef	decided = LLVMConstInt(i1, 0, false);
+					llvm::Value	*result = llvm::ConstantInt::get(i1, is_and ? 1 : 0, false);
+					llvm::Value	*any_null = llvm::ConstantInt::get(i1, 0, false);
+					llvm::Value	*decided = llvm::ConstantInt::get(i1, 0, false);
 
 					foreach(lc, b->args)
 					{
-						LLVMValueRef arg, arg_isnull = NULL, b1, known;
+						llvm::Value *arg, *arg_isnull = NULL, *b1, *known;
 
 						arg = uplpgsql_compile_expr_fmgr_full(ctx,
 							(Expr *) lfirst(lc), estate_ref, &arg_isnull);
 						if (arg == NULL)
 							return NULL;
 
-						b1 = LLVMBuildTrunc(builder, arg, i1,
-											is_and ? "fmgr.and.in"
-												   : "fmgr.or.in");
+						b1 = builder->CreateTrunc(arg, i1, is_and ? "fmgr.and.in" : "fmgr.or.in");
 						result = is_and
-							? LLVMBuildAnd(builder, result, b1, "fmgr.and")
-							: LLVMBuildOr(builder, result, b1, "fmgr.or");
+							? builder->CreateAnd(result, b1, "fmgr.and")
+							: builder->CreateOr(result, b1, "fmgr.or");
 
-						any_null = LLVMBuildOr(builder, any_null, arg_isnull,
-											   "fmgr.bool.anynull");
+						any_null = builder->CreateOr(any_null, arg_isnull, "fmgr.bool.anynull");
 
 						/*
 						 * "decided": this input settles the result on its own
 						 * — a non-NULL false for AND, a non-NULL true for OR.
 						 */
-						known = LLVMBuildNot(builder, arg_isnull,
-											 "fmgr.bool.notnull");
+						known = builder->CreateNot(arg_isnull, "fmgr.bool.notnull");
 						if (is_and)
-							known = LLVMBuildAnd(builder, known,
-								LLVMBuildNot(builder, b1, "fmgr.bool.isfalse"),
-								"fmgr.bool.decides");
+							known = builder->CreateAnd(known, builder->CreateNot(b1, "fmgr.bool.isfalse"), "fmgr.bool.decides");
 						else
-							known = LLVMBuildAnd(builder, known, b1,
-												 "fmgr.bool.decides");
-						decided = LLVMBuildOr(builder, decided, known,
-											  "fmgr.bool.decided");
+							known = builder->CreateAnd(known, b1, "fmgr.bool.decides");
+						decided = builder->CreateOr(decided, known, "fmgr.bool.decided");
 					}
 
 					if (isnull_out)
-						*isnull_out = LLVMBuildAnd(builder, any_null,
-							LLVMBuildNot(builder, decided, "fmgr.bool.undec"),
-							"fmgr.bool.isnull");
+						*isnull_out = builder->CreateAnd(any_null, builder->CreateNot(decided, "fmgr.bool.undec"), "fmgr.bool.isnull");
 
-					return LLVMBuildZExt(builder, result, i64,
-										 is_and ? "fmgr.and.datum"
-												: "fmgr.or.datum");
+					return builder->CreateZExt(result, i64, is_and ? "fmgr.and.datum" : "fmgr.or.datum");
 				}
 			}
 
@@ -3210,15 +3044,15 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				int			nargs;
 				FmgrInfo	finfo;
 				PGFunction	fn_addr;
-				LLVMValueRef fci_alloca;
+				llvm::Value *fci_alloca;
 				int			fci_size;
-				LLVMValueRef off, gep;
-				LLVMValueRef fn_ptr_val;
-				LLVMValueRef call_result;
-				LLVMTypeRef	fn_type;
+				llvm::Value *off, *gep;
+				llvm::Value *fn_ptr_val;
+				llvm::Value *call_result;
+				llvm::FunctionType *fn_type;
 				ListCell   *lc;
 				int			argidx;
-				LLVMValueRef *arg_isnulls;
+				llvm::Value **arg_isnulls;
 
 				if (IsA(expr, OpExpr))
 				{
@@ -3260,12 +3094,10 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					if (c->constisnull)
 					{
 						if (isnull_out)
-							*isnull_out = LLVMConstInt(i1, 1, false);
-						return LLVMConstInt(i64, 0, false);
+							*isnull_out = llvm::ConstantInt::get(i1, 1, false);
+						return llvm::ConstantInt::get(i64, 0, false);
 					}
-					return LLVMConstInt(i64, (uint64)
-						OidFunctionCall1(F_FLOAT8_NUMERIC, c->constvalue),
-						false);
+					return llvm::ConstantInt::get(i64, (uint64) OidFunctionCall1(F_FLOAT8_NUMERIC, c->constvalue), false);
 				}
 
 				/*
@@ -3335,27 +3167,24 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				 * scratch slot.
 				 */
 				{
-					LLVMBasicBlockRef entry_bb;
-					LLVMValueRef	  first_instr;
-					LLVMBasicBlockRef saved_bb;
+					llvm::BasicBlock *entry_bb;
+					llvm::Instruction *first_instr;
+					llvm::BasicBlock *saved_bb;
 					FmgrInfo		 *persistent_finfo;
 
-					saved_bb = LLVMGetInsertBlock(builder);
-					entry_bb = LLVMGetEntryBasicBlock(ctx->function);
-					first_instr = LLVMGetFirstInstruction(entry_bb);
+					saved_bb = builder->GetInsertBlock();
+					entry_bb = &ctx->function->getEntryBlock();
+					first_instr = (entry_bb->empty() ? nullptr : &entry_bb->front());
 					if (first_instr)
-						LLVMPositionBuilderBefore(builder, first_instr);
+						builder->SetInsertPoint(first_instr);
 					else
-						LLVMPositionBuilderAtEnd(builder, entry_bb);
+						builder->SetInsertPoint(entry_bb);
 
-					fci_alloca = LLVMBuildArrayAlloca(builder, i8,
-						LLVMConstInt(i32, fci_size, false), "fci.alloca");
-					LLVMSetAlignment(fci_alloca, 8);
+					fci_alloca = builder->CreateAlloca(i8, llvm::ConstantInt::get(i32, fci_size, false), "fci.alloca");
+					llvm::cast<llvm::AllocaInst>(fci_alloca)->setAlignment(llvm::Align(8));
 
 					/* Zero the struct */
-					LLVMBuildMemSet(builder, fci_alloca,
-						LLVMConstInt(i8, 0, false),
-						LLVMConstInt(i64, fci_size, false), 8);
+					builder->CreateMemSet(fci_alloca, llvm::ConstantInt::get(i8, 0, false), llvm::ConstantInt::get(i64, fci_size, false), llvm::MaybeAlign(8));
 
 					/*
 					 * Set flinfo to point to a persistent FmgrInfo.  Some
@@ -3383,52 +3212,35 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					memcpy(persistent_finfo, &finfo, sizeof(FmgrInfo));
 					persistent_finfo->fn_mcxt = TopMemoryContext;
 
-					off = LLVMConstInt(i64, OFF_FCI_FLINFO, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.flinfo.ptr");
-					LLVMBuildStore(builder,
-						LLVMConstIntToPtr(
-							LLVMConstInt(i64,
-										 (uintptr_t) persistent_finfo,
-										 false),
-							ptr),
-						LLVMBuildBitCast(builder, gep,
-							LLVMPointerType(ptr, 0),
-							"fci.flinfo.typed"));
+					off = llvm::ConstantInt::get(i64, OFF_FCI_FLINFO, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.flinfo.ptr");
+					builder->CreateStore(llvm::ConstantExpr::getIntToPtr(llvm::ConstantInt::get(i64, (uintptr_t) persistent_finfo, false), ptr), builder->CreateBitCast(gep, llvm::PointerType::get(*ctx->context, 0), "fci.flinfo.typed"));
 
 					/* Set nargs */
-					off = LLVMConstInt(i64, OFF_FCI_NARGS, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.nargs.ptr");
-					LLVMBuildStore(builder,
-						LLVMConstInt(i16, nargs, false),
-						LLVMBuildBitCast(builder, gep,
-							LLVMPointerType(i16, 0), "fci.nargs.typed"));
+					off = llvm::ConstantInt::get(i64, OFF_FCI_NARGS, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.nargs.ptr");
+					builder->CreateStore(llvm::ConstantInt::get(i16, nargs, false), builder->CreateBitCast(gep, llvm::PointerType::get(*ctx->context, 0), "fci.nargs.typed"));
 
 					/* Set collation */
 					if (collation != InvalidOid)
 					{
-						off = LLVMConstInt(i64, OFF_FCI_COLLATION, false);
-						gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-											"fci.collation.ptr");
-						LLVMBuildStore(builder,
-							LLVMConstInt(i32, collation, false),
-							LLVMBuildBitCast(builder, gep,
-								LLVMPointerType(i32, 0), "fci.collation.typed"));
+						off = llvm::ConstantInt::get(i64, OFF_FCI_COLLATION, false);
+						gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.collation.ptr");
+						builder->CreateStore(llvm::ConstantInt::get(i32, collation, false), builder->CreateBitCast(gep, llvm::PointerType::get(*ctx->context, 0), "fci.collation.typed"));
 					}
 
-					LLVMPositionBuilderAtEnd(builder, saved_bb);
+					builder->SetInsertPoint(saved_bb);
 				}
 
 				/* Fill in argument values and isnull flags */
-				arg_isnulls = (LLVMValueRef *)
-					palloc(sizeof(LLVMValueRef) * (nargs > 0 ? nargs : 1));
+				arg_isnulls = (llvm::Value **)
+					palloc(sizeof(llvm::Value *) * (nargs > 0 ? nargs : 1));
 				argidx = 0;
 				foreach(lc, args)
 				{
 					Expr	   *arg_expr = (Expr *) lfirst(lc);
-					LLVMValueRef arg_datum;
-					LLVMValueRef arg_isnull;
+					llvm::Value *arg_datum;
+					llvm::Value *arg_isnull;
 					uint64		arg_off;
 
 					/*
@@ -3466,22 +3278,16 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					/* args[argidx].value */
 					arg_off = OFF_FCI_ARGS + SIZE_NULLABLE_DATUM * argidx
 							  + OFF_ND_VALUE;
-					off = LLVMConstInt(i64, arg_off, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.arg.value.ptr");
-					LLVMBuildStore(builder, arg_datum,
-						LLVMBuildBitCast(builder, gep,
-							LLVMPointerType(i64, 0), "fci.arg.value.typed"));
+					off = llvm::ConstantInt::get(i64, arg_off, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.arg.value.ptr");
+					builder->CreateStore(arg_datum, builder->CreateBitCast(gep, llvm::PointerType::get(*ctx->context, 0), "fci.arg.value.typed"));
 
 					/* args[argidx].isnull */
 					arg_off = OFF_FCI_ARGS + SIZE_NULLABLE_DATUM * argidx
 							  + OFF_ND_ISNULL;
-					off = LLVMConstInt(i64, arg_off, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.arg.isnull.ptr");
-					LLVMBuildStore(builder,
-						LLVMBuildZExt(builder, arg_isnull, i8, "isnull.i8"),
-						gep);
+					off = llvm::ConstantInt::get(i64, arg_off, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.arg.isnull.ptr");
+					builder->CreateStore(builder->CreateZExt(arg_isnull, i8, "isnull.i8"), gep);
 
 					argidx++;
 				}
@@ -3499,10 +3305,10 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				 */
 				if (finfo.fn_strict && nargs > 0 && isnull_out)
 				{
-					LLVMBasicBlockRef call_bb, skip_bb, merge_bb;
-					LLVMValueRef	 result_phi, isnull_phi;
-					LLVMValueRef	 incoming_vals[2];
-					LLVMBasicBlockRef incoming_bbs[2];
+					llvm::BasicBlock *call_bb, *skip_bb, *merge_bb;
+					llvm::PHINode	*result_phi, *isnull_phi;
+					llvm::Value	 *incoming_vals[2];
+					llvm::BasicBlock *incoming_bbs[2];
 
 					call_bb = expr_append_block(ctx, "fmgr.strict.call");
 					skip_bb = expr_append_block(ctx, "fmgr.strict.skip");
@@ -3513,7 +3319,7 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 					 * flags together and branch once.
 					 */
 					{
-						LLVMValueRef any_null = LLVMConstInt(i1, 0, false);
+						llvm::Value *any_null = llvm::ConstantInt::get(i1, 0, false);
 						int			 ai;
 
 						/*
@@ -3524,62 +3330,55 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 						 * is what let a strict function run on a NULL.
 						 */
 						for (ai = 0; ai < nargs; ai++)
-							any_null = LLVMBuildOr(builder, any_null,
-												   arg_isnulls[ai],
-												   "fmgr.strict.ornull");
+							any_null = builder->CreateOr(any_null, arg_isnulls[ai], "fmgr.strict.ornull");
 
-						LLVMBuildCondBr(builder, any_null, skip_bb, call_bb);
+						builder->CreateCondBr(any_null, skip_bb, call_bb);
 					}
 
 					/* Skip path: return NULL */
-					LLVMPositionBuilderAtEnd(builder, skip_bb);
-					LLVMBuildBr(builder, merge_bb);
+					builder->SetInsertPoint(skip_bb);
+					builder->CreateBr(merge_bb);
 
 					/* Call path */
-					LLVMPositionBuilderAtEnd(builder, call_bb);
+					builder->SetInsertPoint(call_bb);
 
 					/* Reset fcinfo->isnull = false before call */
-					off = LLVMConstInt(i64, OFF_FCI_ISNULL, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.isnull.ptr");
-					LLVMBuildStore(builder, LLVMConstInt(i8, 0, false), gep);
+					off = llvm::ConstantInt::get(i64, OFF_FCI_ISNULL, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.isnull.ptr");
+					builder->CreateStore(llvm::ConstantInt::get(i8, 0, false), gep);
 
-					fn_type = LLVMFunctionType(i64, &ptr, 1, false);
-					fn_ptr_val = LLVMConstIntToPtr(
-						LLVMConstInt(i64, (uintptr_t) fn_addr, false),
-						LLVMPointerType(fn_type, 0));
+					fn_type = llvm::FunctionType::get(i64, {ptr}, false);
+					fn_ptr_val = llvm::ConstantExpr::getIntToPtr(llvm::ConstantInt::get(i64, (uintptr_t) fn_addr, false), llvm::PointerType::get(*ctx->context, 0));
 
-					call_result = LLVMBuildCall2(builder, fn_type, fn_ptr_val,
-						&fci_alloca, 1, "fmgr.result");
+					call_result = builder->CreateCall(llvm::FunctionCallee(fn_type, fn_ptr_val), {fci_alloca}, "fmgr.result");
 
 					/* Read back fcinfo->isnull */
-					off = LLVMConstInt(i64, OFF_FCI_ISNULL, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.resisnull.ptr");
+					off = llvm::ConstantInt::get(i64, OFF_FCI_ISNULL, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.resisnull.ptr");
 					{
-						LLVMValueRef res_isnull_raw = LLVMBuildLoad2(builder, i8, gep,
-																	 "fci.resisnull.raw");
-						LLVMValueRef res_isnull = LLVMBuildTrunc(builder, res_isnull_raw,
-																 i1, "fci.resisnull");
+						llvm::Value *res_isnull_raw = builder->CreateLoad(i8, gep, "fci.resisnull.raw");
+						llvm::Value *res_isnull = builder->CreateTrunc(res_isnull_raw, i1, "fci.resisnull");
 
-						LLVMBuildBr(builder, merge_bb);
+						builder->CreateBr(merge_bb);
 
 						/* Merge with PHI */
-						LLVMPositionBuilderAtEnd(builder, merge_bb);
+						builder->SetInsertPoint(merge_bb);
 
 						/* Datum PHI */
-						incoming_vals[0] = LLVMConstInt(i64, 0, false);	/* skip: 0 */
+						incoming_vals[0] = llvm::ConstantInt::get(i64, 0, false);	/* skip: 0 */
 						incoming_vals[1] = call_result;					/* call: result */
 						incoming_bbs[0] = skip_bb;
 						incoming_bbs[1] = call_bb;
-						result_phi = LLVMBuildPhi(builder, i64, "fmgr.datum.phi");
-						LLVMAddIncoming(result_phi, incoming_vals, incoming_bbs, 2);
+						result_phi = builder->CreatePHI(i64, 2, "fmgr.datum.phi");
+						result_phi->addIncoming(incoming_vals[0], incoming_bbs[0]);
+						result_phi->addIncoming(incoming_vals[1], incoming_bbs[1]);
 
 						/* isnull PHI */
-						incoming_vals[0] = LLVMConstInt(i1, 1, false);	/* skip: true */
+						incoming_vals[0] = llvm::ConstantInt::get(i1, 1, false);	/* skip: true */
 						incoming_vals[1] = res_isnull;					/* call: from fcinfo */
-						isnull_phi = LLVMBuildPhi(builder, i1, "fmgr.isnull.phi");
-						LLVMAddIncoming(isnull_phi, incoming_vals, incoming_bbs, 2);
+						isnull_phi = builder->CreatePHI(i1, 2, "fmgr.isnull.phi");
+						isnull_phi->addIncoming(incoming_vals[0], incoming_bbs[0]);
+						isnull_phi->addIncoming(incoming_vals[1], incoming_bbs[1]);
 
 						*isnull_out = isnull_phi;
 						return result_phi;
@@ -3597,31 +3396,24 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 				 */
 
 				/* Reset fcinfo->isnull = false before call */
-				off = LLVMConstInt(i64, OFF_FCI_ISNULL, false);
-				gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-									"fci.isnull.ptr");
-				LLVMBuildStore(builder, LLVMConstInt(i8, 0, false), gep);
+				off = llvm::ConstantInt::get(i64, OFF_FCI_ISNULL, false);
+				gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.isnull.ptr");
+				builder->CreateStore(llvm::ConstantInt::get(i8, 0, false), gep);
 
-				fn_type = LLVMFunctionType(i64, &ptr, 1, false);
-				fn_ptr_val = LLVMConstIntToPtr(
-					LLVMConstInt(i64, (uintptr_t) fn_addr, false),
-					LLVMPointerType(fn_type, 0));
+				fn_type = llvm::FunctionType::get(i64, {ptr}, false);
+				fn_ptr_val = llvm::ConstantExpr::getIntToPtr(llvm::ConstantInt::get(i64, (uintptr_t) fn_addr, false), llvm::PointerType::get(*ctx->context, 0));
 
-				call_result = LLVMBuildCall2(builder, fn_type, fn_ptr_val,
-					&fci_alloca, 1, "fmgr.result");
+				call_result = builder->CreateCall(llvm::FunctionCallee(fn_type, fn_ptr_val), {fci_alloca}, "fmgr.result");
 
 				/* If caller wants isnull, read it back from fcinfo */
 				if (isnull_out)
 				{
-					LLVMValueRef res_isnull_raw, res_isnull;
+					llvm::Value *res_isnull_raw, *res_isnull;
 
-					off = LLVMConstInt(i64, OFF_FCI_ISNULL, false);
-					gep = LLVMBuildGEP2(builder, i8, fci_alloca, &off, 1,
-										"fci.resisnull.ptr2");
-					res_isnull_raw = LLVMBuildLoad2(builder, i8, gep,
-													"fci.resisnull.raw2");
-					res_isnull = LLVMBuildTrunc(builder, res_isnull_raw, i1,
-												"fci.resisnull2");
+					off = llvm::ConstantInt::get(i64, OFF_FCI_ISNULL, false);
+					gep = builder->CreateGEP(i8, fci_alloca, {off}, "fci.resisnull.ptr2");
+					res_isnull_raw = builder->CreateLoad(i8, gep, "fci.resisnull.raw2");
+					res_isnull = builder->CreateTrunc(res_isnull_raw, i1, "fci.resisnull2");
 					*isnull_out = res_isnull;
 				}
 
@@ -3644,23 +3436,23 @@ uplpgsql_compile_expr_fmgr_full(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 /*
  * Datum conversion: native value → i64 Datum for storage.
  */
-static LLVMValueRef
-native_to_datum(UPLpgSQL_compile_ctx *ctx, LLVMValueRef val,
+static llvm::Value *
+native_to_datum(UPLpgSQL_compile_ctx *ctx, llvm::Value *val,
 				ExprTypeClass type_class)
 {
-	LLVMBuilderRef builder = ctx->builder;
-	LLVMTypeRef i64 = ctx->types[UPLPGSQL_INT64];
+	llvm::IRBuilder<> *builder = ctx->builder.get();
+	llvm::Type *i64 = ctx->types[UPLPGSQL_INT64];
 
 	switch (type_class)
 	{
 		case EXPR_TYPE_INT4:
-			return LLVMBuildSExt(builder, val, i64, "int4.datum");
+			return builder->CreateSExt(val, i64, "int4.datum");
 		case EXPR_TYPE_INT8:
 			/* Already i64 */
 			return val;
 		case EXPR_TYPE_FLOAT8:
 			/* Bitcast double → i64 for Datum storage */
-			return LLVMBuildBitCast(builder, val, i64, "f8.datum");
+			return builder->CreateBitCast(val, i64, "f8.datum");
 		default:
 			elog(ERROR, "uplpgsql: cannot convert type class %d to Datum",
 				 (int) type_class);
@@ -3673,23 +3465,21 @@ native_to_datum(UPLpgSQL_compile_ctx *ctx, LLVMValueRef val,
  * native_to_datum(), for taking the result of a Tier 2 fmgr call back into
  * native form.  Only the pass-by-value classes a native array can hold.
  */
-static LLVMValueRef
-datum_to_native(UPLpgSQL_compile_ctx *ctx, LLVMValueRef datum,
+static llvm::Value *
+datum_to_native(UPLpgSQL_compile_ctx *ctx, llvm::Value *datum,
 				ExprTypeClass type_class)
 {
-	LLVMBuilderRef builder = ctx->builder;
+	llvm::IRBuilder<> *builder = ctx->builder.get();
 
 	switch (type_class)
 	{
 		case EXPR_TYPE_INT4:
-			return LLVMBuildTrunc(builder, datum,
-								  ctx->types[UPLPGSQL_INT32], "datum.int4");
+			return builder->CreateTrunc(datum, ctx->types[UPLPGSQL_INT32], "datum.int4");
 		case EXPR_TYPE_INT8:
 			/* Already i64 */
 			return datum;
 		case EXPR_TYPE_FLOAT8:
-			return LLVMBuildBitCast(builder, datum,
-									ctx->types[UPLPGSQL_DOUBLE], "datum.f8");
+			return builder->CreateBitCast(datum, ctx->types[UPLPGSQL_DOUBLE], "datum.f8");
 		default:
 			elog(ERROR, "uplpgsql: cannot convert Datum to type class %d",
 				 (int) type_class);
@@ -3745,7 +3535,7 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 {
 	Expr		   *expr;
 	ExprTypeClass	target_class, expr_class;
-	LLVMValueRef	estate_ref, result, datum_val;
+	llvm::Value	*estate_ref, *result, *datum_val;
 	UPLpgSQL_datum *target_datum;
 	UPLpgSQL_var   *target_var;
 
@@ -3769,14 +3559,14 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 	expr_class = uplpgsql_classify_expr(expr);
 	if (expr_class != EXPR_TYPE_UNKNOWN && expr_class == target_class)
 	{
-		LLVMValueRef	any_null;
+		llvm::Value	*any_null;
 
 		elog(DEBUG1, "uplpgsql: inlining %s assignment to dno %d: %s",
 			 (target_class == EXPR_TYPE_INT4 ? "int4" :
 			  target_class == EXPR_TYPE_INT8 ? "int8" : "float8"),
 			 stmt->varno, stmt->expr->query);
 
-		estate_ref = LLVMGetParam(ctx->function, 0);
+		estate_ref = ctx->function->getArg(0);
 		any_null = tier1_expr_any_null(ctx, expr, estate_ref);
 
 		if (any_null == NULL)
@@ -3798,32 +3588,27 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 		 * would have returned NULL without ever invoking the operator.
 		 */
 		{
-			LLVMBasicBlockRef	compute_bb, null_bb, merge_bb;
+			llvm::BasicBlock	*compute_bb, *null_bb, *merge_bb;
 
-			compute_bb = LLVMAppendBasicBlockInContext(ctx->context,
-													   ctx->function,
-													   "t1.notnull");
-			null_bb = LLVMAppendBasicBlockInContext(ctx->context,
-													ctx->function, "t1.null");
-			merge_bb = LLVMAppendBasicBlockInContext(ctx->context,
-													 ctx->function,
-													 "t1.done");
+			compute_bb = llvm::BasicBlock::Create(*ctx->context, "t1.notnull", ctx->function);
+			null_bb = llvm::BasicBlock::Create(*ctx->context, "t1.null", ctx->function);
+			merge_bb = llvm::BasicBlock::Create(*ctx->context, "t1.done", ctx->function);
 
-			LLVMBuildCondBr(ctx->builder, any_null, null_bb, compute_bb);
+			ctx->builder->CreateCondBr(any_null, null_bb, compute_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, compute_bb);
+			ctx->builder->SetInsertPoint(compute_bb);
 			result = uplpgsql_compile_expr_datum(ctx, expr, estate_ref,
 												 &expr_class);
 			datum_val = native_to_datum(ctx, result, expr_class);
 			uplpgsql_emit_store_var_datum(ctx, estate_ref, stmt->varno,
 										  datum_val);
-			LLVMBuildBr(ctx->builder, merge_bb);
+			ctx->builder->CreateBr(merge_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
+			ctx->builder->SetInsertPoint(null_bb);
 			uplpgsql_emit_store_var_null(ctx, estate_ref, stmt->varno);
-			LLVMBuildBr(ctx->builder, merge_bb);
+			ctx->builder->CreateBr(merge_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
+			ctx->builder->SetInsertPoint(merge_bb);
 		}
 		return true;
 	}
@@ -3838,13 +3623,13 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 	 */
 	if (uplpgsql_can_fmgr_compile(expr))
 	{
-		estate_ref = LLVMGetParam(ctx->function, 0);
+		estate_ref = ctx->function->getArg(0);
 
 		if (target_var->datatype->typbyval)
 		{
-			LLVMValueRef	isnull_val;
+			llvm::Value	*isnull_val;
 			bool			scoped = fmgr_expr_wants_alloc_scope(ctx, expr);
-			LLVMValueRef	old = NULL;
+			llvm::Value	*old = NULL;
 
 			/*
 			 * A by-value result can still be reached through a by-reference
@@ -3854,11 +3639,9 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 			 */
 			if (scoped)
 			{
-				LLVMValueRef a[] = { estate_ref };
+				llvm::Value *a[] = { estate_ref };
 
-				old = LLVMBuildCall2(ctx->builder,
-					ctx->rt_fntypes[RT_ALLOC_SCOPE_ENTER],
-					ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, 1, "scope.old");
+				old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 			}
 
 			/*
@@ -3879,22 +3662,18 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 													 isnull_val);
 				if (scoped)
 				{
-					LLVMValueRef a[] = { estate_ref, old };
+					llvm::Value *a[] = { estate_ref, old };
 
-					LLVMBuildCall2(ctx->builder,
-						ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-						ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, 2, "");
+					ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 				}
 				return true;
 			}
 			/* fmgr_full bailed: restore the context before Tier 3 */
 			if (scoped)
 			{
-				LLVMValueRef a[] = { estate_ref, old };
+				llvm::Value *a[] = { estate_ref, old };
 
-				LLVMBuildCall2(ctx->builder,
-					ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-					ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, 2, "");
+				ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 			}
 			/* Fall through to Tier 3 */
 		}
@@ -3915,17 +3694,15 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 			 * reading a native array whole-datum syncs it into the variable's
 			 * own slot, and resetting the scope would free that live value.
 			 */
-			LLVMValueRef	isnull_val;
+			llvm::Value	*isnull_val;
 			bool			scoped = fmgr_expr_wants_alloc_scope(ctx, expr);
-			LLVMValueRef	old = NULL;
+			llvm::Value	*old = NULL;
 
 			if (scoped)
 			{
-				LLVMValueRef a[] = { estate_ref };
+				llvm::Value *a[] = { estate_ref };
 
-				old = LLVMBuildCall2(ctx->builder,
-					ctx->rt_fntypes[RT_ALLOC_SCOPE_ENTER],
-					ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, 1, "scope.old");
+				old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 			}
 
 			datum_val = uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref,
@@ -3938,32 +3715,24 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 
 				if (scoped)
 				{
-					LLVMValueRef args[] = {
+					llvm::Value *args[] = {
 						estate_ref,
-						LLVMConstInt(ctx->types[UPLPGSQL_INT32], stmt->varno, false),
+						llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], stmt->varno, false),
 						datum_val,
-						LLVMBuildZExt(ctx->builder, isnull_val,
-									  ctx->types[UPLPGSQL_INT8], "isnull.i8"),
+						ctx->builder->CreateZExt(isnull_val, ctx->types[UPLPGSQL_INT8], "isnull.i8"),
 						old
 					};
-					LLVMBuildCall2(ctx->builder,
-						ctx->rt_fntypes[RT_COPY_ASSIGN_VAR_DATUM_SCOPED],
-						ctx->rt_funcs[RT_COPY_ASSIGN_VAR_DATUM_SCOPED],
-						args, 5, "");
+					ctx->builder->CreateCall(ctx->rt_funcs[RT_COPY_ASSIGN_VAR_DATUM_SCOPED], args, "");
 				}
 				else
 				{
-					LLVMValueRef args[] = {
+					llvm::Value *args[] = {
 						estate_ref,
-						LLVMConstInt(ctx->types[UPLPGSQL_INT32], stmt->varno, false),
+						llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], stmt->varno, false),
 						datum_val,
-						LLVMBuildZExt(ctx->builder, isnull_val,
-									  ctx->types[UPLPGSQL_INT8], "isnull.i8")
+						ctx->builder->CreateZExt(isnull_val, ctx->types[UPLPGSQL_INT8], "isnull.i8")
 					};
-					LLVMBuildCall2(ctx->builder,
-								   ctx->rt_fntypes[RT_COPY_ASSIGN_VAR_DATUM],
-								   ctx->rt_funcs[RT_COPY_ASSIGN_VAR_DATUM],
-								   args, 4, "");
+					ctx->builder->CreateCall(ctx->rt_funcs[RT_COPY_ASSIGN_VAR_DATUM], args, "");
 				}
 
 				/*
@@ -3987,11 +3756,9 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 			/* fmgr_full bailed: restore the context before Tier 3 */
 			if (scoped)
 			{
-				LLVMValueRef a[] = { estate_ref, old };
+				llvm::Value *a[] = { estate_ref, old };
 
-				LLVMBuildCall2(ctx->builder,
-					ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-					ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, 2, "");
+				ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 			}
 			/* Fall through to Tier 3 */
 		}
@@ -4035,15 +3802,16 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 			Expr		   *size_arg;
 			Expr		   *fill_arg;
 			ExprTypeClass	fill_class;
-			LLVMValueRef	fill_val;
+			llvm::Value	*fill_val;
 			ExprTypeClass	size_class;
-			LLVMValueRef	n_val, byte_size, threshold, use_stack;
-			LLVMValueRef	stack_ptr, heap_ptr, data_ptr;
-			LLVMBasicBlockRef stack_bb, heap_bb, merge_bb;
-			LLVMTypeRef		i32_ty = ctx->types[UPLPGSQL_INT32];
-			LLVMTypeRef		i64_ty = ctx->types[UPLPGSQL_INT64];
+			llvm::Value	*n_val, *byte_size, *threshold, *use_stack;
+			llvm::Value    *stack_ptr, *heap_ptr;
+			llvm::PHINode  *data_ptr;
+			llvm::BasicBlock *stack_bb, *heap_bb, *merge_bb;
+			llvm::Type		*i32_ty = ctx->types[UPLPGSQL_INT32];
+			llvm::Type		*i64_ty = ctx->types[UPLPGSQL_INT64];
 
-			estate_ref = LLVMGetParam(ctx->function, 0);
+			estate_ref = ctx->function->getArg(0);
 
 			if (stmt->expr->plan == NULL)
 				goto not_native_init;
@@ -4193,96 +3961,79 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 			 * Store the length.  array_fill always produces a 1-based array
 			 * with no NULL elements.
 			 */
-			LLVMBuildStore(ctx->builder, n_val, na->len_ptr);
-			LLVMBuildStore(ctx->builder, upl_const_int32(ctx, 1), na->lb_ptr);
-			LLVMBuildStore(ctx->builder,
-						   LLVMConstNull(ctx->types[UPLPGSQL_PTR]),
-						   na->nulls_ptr);
+			ctx->builder->CreateStore(n_val, na->len_ptr);
+			ctx->builder->CreateStore(upl_const_int32(ctx, 1), na->lb_ptr);
+			ctx->builder->CreateStore(llvm::Constant::getNullValue(ctx->types[UPLPGSQL_PTR]), na->nulls_ptr);
 
 			/* byte_size = (i64)n * elem_size */
-			byte_size = LLVMBuildMul(ctx->builder,
-				LLVMBuildSExt(ctx->builder, n_val, i64_ty, "n64"),
-				LLVMConstInt(i64_ty, na->elem_size, false),
-				"byte_size");
+			byte_size = ctx->builder->CreateMul(ctx->builder->CreateSExt(n_val, i64_ty, "n64"), llvm::ConstantInt::get(i64_ty, na->elem_size, false), "byte_size");
 
 			/*
 			 * Stack vs heap decision at runtime:
 			 *   if byte_size <= NATIVE_ARRAY_STACK_THRESHOLD → alloca
 			 *   else → palloc0 via runtime helper
 			 */
-			threshold = LLVMConstInt(i64_ty, NATIVE_ARRAY_STACK_THRESHOLD, false);
-			use_stack = LLVMBuildICmp(ctx->builder, LLVMIntSLE,
-									  byte_size, threshold, "use_stack");
+			threshold = llvm::ConstantInt::get(i64_ty, NATIVE_ARRAY_STACK_THRESHOLD, false);
+			use_stack = ctx->builder->CreateICmpSLE(byte_size, threshold, "use_stack");
 
 			stack_bb = expr_append_block(ctx, "na.stack");
 			heap_bb = expr_append_block(ctx, "na.heap");
 			merge_bb = expr_append_block(ctx, "na.merge");
 
-			LLVMBuildCondBr(ctx->builder, use_stack, stack_bb, heap_bb);
+			ctx->builder->CreateCondBr(use_stack, stack_bb, heap_bb);
 
 			/* Stack path: alloca + memset */
-			LLVMPositionBuilderAtEnd(ctx->builder, stack_bb);
+			ctx->builder->SetInsertPoint(stack_bb);
 			{
-				LLVMValueRef alloca_size;
+				llvm::Value *alloca_size;
 
 				/* Use i8 alloca with byte_size count */
-				alloca_size = LLVMBuildTrunc(ctx->builder, byte_size,
-											 i32_ty, "stack_bytes");
-				stack_ptr = LLVMBuildArrayAlloca(ctx->builder,
-					ctx->types[UPLPGSQL_INT8], alloca_size, "na.stack_mem");
+				alloca_size = ctx->builder->CreateTrunc(byte_size, i32_ty, "stack_bytes");
+				stack_ptr = ctx->builder->CreateAlloca(ctx->types[UPLPGSQL_INT8], alloca_size, "na.stack_mem");
 
 				/* memset to zero */
-				LLVMBuildMemSet(ctx->builder, stack_ptr,
-					LLVMConstInt(ctx->types[UPLPGSQL_INT8], 0, false),
-					byte_size, 0);
+				ctx->builder->CreateMemSet(stack_ptr, llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT8], 0, false), byte_size, llvm::MaybeAlign(0));
 			}
-			LLVMBuildBr(ctx->builder, merge_bb);
+			ctx->builder->CreateBr(merge_bb);
 
 			/* Heap path: palloc0 via runtime helper */
-			LLVMPositionBuilderAtEnd(ctx->builder, heap_bb);
+			ctx->builder->SetInsertPoint(heap_bb);
 			{
-				LLVMValueRef args[] = { estate_ref, byte_size };
+				llvm::Value *args[] = { estate_ref, byte_size };
 
-				heap_ptr = LLVMBuildCall2(ctx->builder,
-					ctx->rt_fntypes[RT_NATIVE_ARRAY_ALLOC],
-					ctx->rt_funcs[RT_NATIVE_ARRAY_ALLOC],
-					args, 2, "na.heap_mem");
+				heap_ptr = ctx->builder->CreateCall(ctx->rt_funcs[RT_NATIVE_ARRAY_ALLOC], args, "na.heap_mem");
 			}
-			LLVMBuildBr(ctx->builder, merge_bb);
+			ctx->builder->CreateBr(merge_bb);
 
 			/* Merge: PHI to select stack or heap pointer */
-			LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-			data_ptr = LLVMBuildPhi(ctx->builder, ctx->types[UPLPGSQL_PTR],
-									"na.data");
+			ctx->builder->SetInsertPoint(merge_bb);
+			data_ptr = ctx->builder->CreatePHI(ctx->types[UPLPGSQL_PTR], 2, "na.data");
 			{
-				LLVMValueRef	vals[] = { stack_ptr, heap_ptr };
-				LLVMBasicBlockRef blocks[] = { stack_bb, heap_bb };
+				llvm::Value	*vals[] = { stack_ptr, heap_ptr };
+				llvm::BasicBlock *blocks[] = { stack_bb, heap_bb };
 
-				LLVMAddIncoming(data_ptr, vals, blocks, 2);
+				data_ptr->addIncoming(vals[0], blocks[0]);
+				data_ptr->addIncoming(vals[1], blocks[1]);
 			}
 
-			LLVMBuildStore(ctx->builder, data_ptr, na->data_ptr);
+			ctx->builder->CreateStore(data_ptr, na->data_ptr);
 
 			/*
 			 * The buffer holds exactly n elements, and the same test that
 			 * chose stack vs heap says whether it may later be repalloc'd
 			 * by an append (see uplpgsql_rt_native_array_reserve).
 			 */
-			LLVMBuildStore(ctx->builder, n_val, na->cap_ptr);
-			LLVMBuildStore(ctx->builder,
-				LLVMBuildZExt(ctx->builder,
-					LLVMBuildNot(ctx->builder, use_stack, "na.onheap.i1"),
-					ctx->types[UPLPGSQL_INT8], "na.onheap"),
-				na->is_heap_ptr);
+			ctx->builder->CreateStore(n_val, na->cap_ptr);
+			ctx->builder->CreateStore(ctx->builder->CreateZExt(ctx->builder->CreateNot(use_stack, "na.onheap.i1"), ctx->types[UPLPGSQL_INT8], "na.onheap"), na->is_heap_ptr);
 
 			/*
 			 * Fill the array with the fill value.
 			 * Emit a simple loop: for (i = 0; i < n; i++) data[i] = val;
 			 */
 			{
-				LLVMBasicBlockRef fill_cond_bb, fill_body_bb, fill_done_bb;
-				LLVMValueRef	idx_ptr, idx, cmp, elem_ptr;
-				LLVMTypeRef		elem_llvm_type;
+				llvm::BasicBlock *fill_cond_bb, *fill_body_bb, *fill_done_bb;
+				llvm::Value	*idx_ptr, *idx, *cmp, *elem_ptr;
+				llvm::Type		*elem_llvm_type;
 
 				if (na->elemtype == INT4OID)
 					elem_llvm_type = ctx->types[UPLPGSQL_INT32];
@@ -4294,56 +4045,41 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 				/* Cast fill_val to the element type if needed */
 				if (fill_class == EXPR_TYPE_INT4 &&
 					na->elemtype == INT8OID)
-					fill_val = LLVMBuildSExt(ctx->builder, fill_val,
-											 elem_llvm_type, "fill64");
+					fill_val = ctx->builder->CreateSExt(fill_val, elem_llvm_type, "fill64");
 				else if (fill_class == EXPR_TYPE_INT8 &&
 						 na->elemtype == INT4OID)
-					fill_val = LLVMBuildTrunc(ctx->builder, fill_val,
-											  elem_llvm_type, "fill32");
+					fill_val = ctx->builder->CreateTrunc(fill_val, elem_llvm_type, "fill32");
 
 				fill_cond_bb = expr_append_block(ctx, "na.fill.cond");
 				fill_body_bb = expr_append_block(ctx, "na.fill.body");
 				fill_done_bb = expr_append_block(ctx, "na.fill.done");
 
-				idx_ptr = LLVMBuildAlloca(ctx->builder, i32_ty, "fill_idx");
-				LLVMBuildStore(ctx->builder,
-							   LLVMConstInt(i32_ty, 0, false), idx_ptr);
-				LLVMBuildBr(ctx->builder, fill_cond_bb);
+				idx_ptr = ctx->builder->CreateAlloca(i32_ty, nullptr, "fill_idx");
+				ctx->builder->CreateStore(llvm::ConstantInt::get(i32_ty, 0, false), idx_ptr);
+				ctx->builder->CreateBr(fill_cond_bb);
 
 				/* Condition: i < n */
-				LLVMPositionBuilderAtEnd(ctx->builder, fill_cond_bb);
-				idx = LLVMBuildLoad2(ctx->builder, i32_ty, idx_ptr,
-									 "fill_i");
-				cmp = LLVMBuildICmp(ctx->builder, LLVMIntSLT,
-									idx, n_val, "fill_cmp");
-				LLVMBuildCondBr(ctx->builder, cmp,
-								fill_body_bb, fill_done_bb);
+				ctx->builder->SetInsertPoint(fill_cond_bb);
+				idx = ctx->builder->CreateLoad(i32_ty, idx_ptr, "fill_i");
+				cmp = ctx->builder->CreateICmpSLT(idx, n_val, "fill_cmp");
+				ctx->builder->CreateCondBr(cmp, fill_body_bb, fill_done_bb);
 
 				/* Body: data[i] = fill_val; i++ */
-				LLVMPositionBuilderAtEnd(ctx->builder, fill_body_bb);
+				ctx->builder->SetInsertPoint(fill_body_bb);
 				{
-					LLVMValueRef byte_off, gep_idx;
+					llvm::Value *byte_off, *gep_idx;
 
-					byte_off = LLVMBuildMul(ctx->builder, idx,
-						LLVMConstInt(i32_ty, na->elem_size, false),
-						"fill_off");
-					gep_idx = LLVMBuildSExt(ctx->builder, byte_off,
-						i64_ty, "fill_off64");
-					elem_ptr = LLVMBuildGEP2(ctx->builder,
-						ctx->types[UPLPGSQL_INT8],
-						data_ptr, &gep_idx, 1, "fill_elem");
-					elem_ptr = LLVMBuildBitCast(ctx->builder, elem_ptr,
-						LLVMPointerType(elem_llvm_type, 0), "fill_typed");
-					LLVMBuildStore(ctx->builder, fill_val, elem_ptr);
+					byte_off = ctx->builder->CreateMul(idx, llvm::ConstantInt::get(i32_ty, na->elem_size, false), "fill_off");
+					gep_idx = ctx->builder->CreateSExt(byte_off, i64_ty, "fill_off64");
+					elem_ptr = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8], data_ptr, {gep_idx}, "fill_elem");
+					elem_ptr = ctx->builder->CreateBitCast(elem_ptr, llvm::PointerType::get(*ctx->context, 0), "fill_typed");
+					ctx->builder->CreateStore(fill_val, elem_ptr);
 				}
 				/* i++ */
-				LLVMBuildStore(ctx->builder,
-					LLVMBuildAdd(ctx->builder, idx,
-								 LLVMConstInt(i32_ty, 1, false), "fill_inc"),
-					idx_ptr);
-				LLVMBuildBr(ctx->builder, fill_cond_bb);
+				ctx->builder->CreateStore(ctx->builder->CreateAdd(idx, llvm::ConstantInt::get(i32_ty, 1, false), "fill_inc"), idx_ptr);
+				ctx->builder->CreateBr(fill_cond_bb);
 
-				LLVMPositionBuilderAtEnd(ctx->builder, fill_done_bb);
+				ctx->builder->SetInsertPoint(fill_done_bb);
 			}
 
 			return true;
@@ -4378,7 +4114,7 @@ not_native_init:
 				int array_dno = array_param->paramid - 1;
 				UPLpgSQL_native_array *na = find_native_array(ctx, array_dno);
 
-				estate_ref = LLVMGetParam(ctx->function, 0);
+				estate_ref = ctx->function->getArg(0);
 
 				if (na != NULL && sbsref->refassgnexpr != NULL)
 				{
@@ -4396,16 +4132,16 @@ not_native_init:
 					 */
 					Expr		   *val_expr = sbsref->refassgnexpr;
 					ExprTypeClass	val_class;
-					LLVMValueRef	idx_val, val_result;
-					LLVMValueRef	val_isnull = NULL;
-					LLVMValueRef	data, len, idx0, gep;
-					LLVMValueRef	lb, in_range;
-					LLVMValueRef	scope_old = NULL;
+					llvm::Value	*idx_val, *val_result;
+					llvm::Value	*val_isnull = NULL;
+					llvm::Value	*data, *len, *idx0, *gep;
+					llvm::Value	*lb, *in_range;
+					llvm::Value	*scope_old = NULL;
 					bool			scoped = false;
-					LLVMBasicBlockRef fast_bb, miss_bb, append_bb;
-					LLVMBasicBlockRef grow_bb, appstore_bb;
-					LLVMBasicBlockRef slow_bb, done_bb;
-					LLVMTypeRef		i32_ty = ctx->types[UPLPGSQL_INT32];
+					llvm::BasicBlock *fast_bb, *miss_bb, *append_bb;
+					llvm::BasicBlock *grow_bb, *appstore_bb;
+					llvm::BasicBlock *slow_bb, *done_bb;
+					llvm::Type		*i32_ty = ctx->types[UPLPGSQL_INT32];
 
 					val_class = uplpgsql_classify_expr(val_expr);
 
@@ -4480,12 +4216,9 @@ not_native_init:
 						scoped = fmgr_expr_wants_alloc_scope(ctx, val_expr);
 						if (scoped)
 						{
-							LLVMValueRef a[] = { estate_ref };
+							llvm::Value *a[] = { estate_ref };
 
-							scope_old = LLVMBuildCall2(ctx->builder,
-								ctx->rt_fntypes[RT_ALLOC_SCOPE_ENTER],
-								ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER],
-								a, 1, "scope.old");
+							scope_old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 						}
 
 						val_result = uplpgsql_compile_expr_fmgr_full(ctx,
@@ -4497,12 +4230,9 @@ not_native_init:
 							/* fmgr_full bailed: restore the context first */
 							if (scoped)
 							{
-								LLVMValueRef a[] = { estate_ref, scope_old };
+								llvm::Value *a[] = { estate_ref, scope_old };
 
-								LLVMBuildCall2(ctx->builder,
-									ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-									ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT],
-									a, 2, "");
+								ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 							}
 							goto standard_array_path;
 						}
@@ -4512,12 +4242,9 @@ not_native_init:
 
 						if (scoped)
 						{
-							LLVMValueRef a[] = { estate_ref, scope_old };
+							llvm::Value *a[] = { estate_ref, scope_old };
 
-							LLVMBuildCall2(ctx->builder,
-								ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-								ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT],
-								a, 2, "");
+							ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 						}
 					}
 					else
@@ -4543,25 +4270,12 @@ not_native_init:
 					 * The check mirrors the read path in tier1_expr_any_null:
 					 * len < 0 means "not a 1-D array".
 					 */
-					len = LLVMBuildLoad2(ctx->builder, i32_ty,
-										 na->len_ptr, "na.len");
-					lb = LLVMBuildLoad2(ctx->builder, i32_ty,
-										na->lb_ptr, "na.lb");
+					len = ctx->builder->CreateLoad(i32_ty, na->len_ptr, "na.len");
+					lb = ctx->builder->CreateLoad(i32_ty, na->lb_ptr, "na.lb");
 
-					in_range = LLVMBuildICmp(ctx->builder, LLVMIntSGE, len,
-											 LLVMConstInt(i32_ty, 0, true),
-											 "na.flat");
-					in_range = LLVMBuildAnd(ctx->builder, in_range,
-						LLVMBuildICmp(ctx->builder, LLVMIntSGE, idx_val, lb,
-									  "na.ge.lb"),
-						"na.set.lo");
-					in_range = LLVMBuildAnd(ctx->builder, in_range,
-						LLVMBuildICmp(ctx->builder, LLVMIntSLE, idx_val,
-							LLVMBuildSub(ctx->builder,
-								LLVMBuildAdd(ctx->builder, lb, len, "na.end"),
-								LLVMConstInt(i32_ty, 1, false), "na.last"),
-							"na.le.hi"),
-						"na.set.ok");
+					in_range = ctx->builder->CreateICmpSGE(len, llvm::ConstantInt::get(i32_ty, 0, true), "na.flat");
+					in_range = ctx->builder->CreateAnd(in_range, ctx->builder->CreateICmpSGE(idx_val, lb, "na.ge.lb"), "na.set.lo");
+					in_range = ctx->builder->CreateAnd(in_range, ctx->builder->CreateICmpSLE(idx_val, ctx->builder->CreateSub(ctx->builder->CreateAdd(lb, len, "na.end"), llvm::ConstantInt::get(i32_ty, 1, false), "na.last"), "na.le.hi"), "na.set.ok");
 
 					/*
 					 * A NULL value cannot go through the flat store: there
@@ -4573,10 +4287,7 @@ not_native_init:
 					 * that its cost does not matter.
 					 */
 					if (val_isnull != NULL)
-						in_range = LLVMBuildAnd(ctx->builder, in_range,
-							LLVMBuildNot(ctx->builder, val_isnull,
-										 "na.set.notnull"),
-							"na.set.ok.nn");
+						in_range = ctx->builder->CreateAnd(in_range, ctx->builder->CreateNot(val_isnull, "na.set.notnull"), "na.set.ok.nn");
 
 					fast_bb = expr_append_block(ctx, "na.set.fast");
 					miss_bb = expr_append_block(ctx, "na.set.miss");
@@ -4586,7 +4297,7 @@ not_native_init:
 					slow_bb = expr_append_block(ctx, "na.set.slow");
 					done_bb = expr_append_block(ctx, "na.set.done");
 
-					LLVMBuildCondBr(ctx->builder, in_range, fast_bb, miss_bb);
+					ctx->builder->CreateCondBr(in_range, fast_bb, miss_bb);
 
 					/*
 					 * Not a plain in-range store.  The overwhelmingly common
@@ -4607,74 +4318,53 @@ not_native_init:
 					 * than the interpreter at 20,000 elements, OOM at
 					 * 40,000.
 					 */
-					LLVMPositionBuilderAtEnd(ctx->builder, miss_bb);
+					ctx->builder->SetInsertPoint(miss_bb);
 					{
-						LLVMValueRef	is_append;
+						llvm::Value	*is_append;
 
-						is_append = LLVMBuildICmp(ctx->builder, LLVMIntSGE,
-												  len,
-												  LLVMConstInt(i32_ty, 0, true),
-												  "na.app.flat");
-						is_append = LLVMBuildAnd(ctx->builder, is_append,
-							LLVMBuildICmp(ctx->builder, LLVMIntEQ, idx_val,
-								LLVMBuildAdd(ctx->builder, lb, len,
-											 "na.app.next"),
-								"na.app.at.end"),
-							"na.append");
+						is_append = ctx->builder->CreateICmpSGE(len, llvm::ConstantInt::get(i32_ty, 0, true), "na.app.flat");
+						is_append = ctx->builder->CreateAnd(is_append, ctx->builder->CreateICmpEQ(idx_val, ctx->builder->CreateAdd(lb, len, "na.app.next"), "na.app.at.end"), "na.append");
 						if (val_isnull != NULL)
-							is_append = LLVMBuildAnd(ctx->builder, is_append,
-								LLVMBuildNot(ctx->builder, val_isnull,
-											 "na.app.notnull"),
-								"na.append.nn");
+							is_append = ctx->builder->CreateAnd(is_append, ctx->builder->CreateNot(val_isnull, "na.app.notnull"), "na.append.nn");
 
-						LLVMBuildCondBr(ctx->builder, is_append, append_bb,
-										slow_bb);
+						ctx->builder->CreateCondBr(is_append, append_bb, slow_bb);
 					}
 
 					/* Append: grow the buffers first when len has hit cap. */
-					LLVMPositionBuilderAtEnd(ctx->builder, append_bb);
+					ctx->builder->SetInsertPoint(append_bb);
 					{
-						LLVMValueRef	cap, need_grow;
+						llvm::Value	*cap, *need_grow;
 
-						cap = LLVMBuildLoad2(ctx->builder, i32_ty,
-											 na->cap_ptr, "na.cap");
-						need_grow = LLVMBuildICmp(ctx->builder, LLVMIntSGE,
-												  len, cap, "na.app.full");
-						LLVMBuildCondBr(ctx->builder, need_grow, grow_bb,
-										appstore_bb);
+						cap = ctx->builder->CreateLoad(i32_ty, na->cap_ptr, "na.cap");
+						need_grow = ctx->builder->CreateICmpSGE(len, cap, "na.app.full");
+						ctx->builder->CreateCondBr(need_grow, grow_bb, appstore_bb);
 					}
 
-					LLVMPositionBuilderAtEnd(ctx->builder, grow_bb);
+					ctx->builder->SetInsertPoint(grow_bb);
 					{
-						LLVMValueRef args[] = {
+						llvm::Value *args[] = {
 							estate_ref,
 							na->data_ptr,
 							na->nulls_ptr,
 							na->is_heap_ptr,
 							na->cap_ptr,
 							len,
-							LLVMConstInt(i32_ty, na->elem_size, false)
+							llvm::ConstantInt::get(i32_ty, na->elem_size, false)
 						};
 
-						LLVMBuildCall2(ctx->builder,
-							ctx->rt_fntypes[RT_NATIVE_ARRAY_RESERVE],
-							ctx->rt_funcs[RT_NATIVE_ARRAY_RESERVE],
-							args, 7, "");
+						ctx->builder->CreateCall(ctx->rt_funcs[RT_NATIVE_ARRAY_RESERVE], args, "");
 					}
-					LLVMBuildBr(ctx->builder, appstore_bb);
+					ctx->builder->CreateBr(appstore_bb);
 
 					/* Slot len is the append position (0-based). */
-					LLVMPositionBuilderAtEnd(ctx->builder, appstore_bb);
+					ctx->builder->SetInsertPoint(appstore_bb);
 					{
-						LLVMValueRef		adata, agep, anulls, ahas;
-						LLVMBasicBlockRef	aclr_bb, adone_bb;
+						llvm::Value		*adata, *agep, *anulls, *ahas;
+						llvm::BasicBlock	*aclr_bb, *adone_bb;
 
-						adata = LLVMBuildLoad2(ctx->builder,
-											   ctx->types[UPLPGSQL_PTR],
-											   na->data_ptr, "na.app.data");
-						agep = LLVMBuildGEP2(ctx->builder, na->llvm_elemtype,
-											 adata, &len, 1, "na.app.slot");
-						LLVMBuildStore(ctx->builder, val_result, agep);
+						adata = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->data_ptr, "na.app.data");
+						agep = ctx->builder->CreateGEP(na->llvm_elemtype, adata, {len}, "na.app.slot");
+						ctx->builder->CreateStore(val_result, agep);
 
 						/*
 						 * The appended element has a value, so its NULL flag
@@ -4683,48 +4373,33 @@ not_native_init:
 						 * for a slot inside the old capacity — but it mirrors
 						 * the in-range store above and costs one byte.
 						 */
-						anulls = LLVMBuildLoad2(ctx->builder,
-												ctx->types[UPLPGSQL_PTR],
-												na->nulls_ptr, "na.app.nulls");
-						ahas = LLVMBuildICmp(ctx->builder, LLVMIntNE, anulls,
-											 LLVMConstNull(ctx->types[UPLPGSQL_PTR]),
-											 "na.app.has.nulls");
+						anulls = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->nulls_ptr, "na.app.nulls");
+						ahas = ctx->builder->CreateICmpNE(anulls, llvm::Constant::getNullValue(ctx->types[UPLPGSQL_PTR]), "na.app.has.nulls");
 
 						aclr_bb = expr_append_block(ctx, "na.app.clrnull");
 						adone_bb = expr_append_block(ctx, "na.app.stored");
-						LLVMBuildCondBr(ctx->builder, ahas, aclr_bb, adone_bb);
+						ctx->builder->CreateCondBr(ahas, aclr_bb, adone_bb);
 
-						LLVMPositionBuilderAtEnd(ctx->builder, aclr_bb);
+						ctx->builder->SetInsertPoint(aclr_bb);
 						{
-							LLVMValueRef angep;
+							llvm::Value *angep;
 
-							angep = LLVMBuildGEP2(ctx->builder,
-								ctx->types[UPLPGSQL_INT8], anulls, &len, 1,
-								"na.app.null.ptr");
-							LLVMBuildStore(ctx->builder,
-								LLVMConstInt(ctx->types[UPLPGSQL_INT8], 0,
-											 false),
-								angep);
+							angep = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8], anulls, {len}, "na.app.null.ptr");
+							ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT8], 0, false), angep);
 						}
-						LLVMBuildBr(ctx->builder, adone_bb);
+						ctx->builder->CreateBr(adone_bb);
 
-						LLVMPositionBuilderAtEnd(ctx->builder, adone_bb);
-						LLVMBuildStore(ctx->builder,
-							LLVMBuildAdd(ctx->builder, len,
-										 LLVMConstInt(i32_ty, 1, false),
-										 "na.app.newlen"),
-							na->len_ptr);
+						ctx->builder->SetInsertPoint(adone_bb);
+						ctx->builder->CreateStore(ctx->builder->CreateAdd(len, llvm::ConstantInt::get(i32_ty, 1, false), "na.app.newlen"), na->len_ptr);
 					}
-					LLVMBuildBr(ctx->builder, done_bb);
+					ctx->builder->CreateBr(done_bb);
 
 					/* In range: store straight into flat memory. */
-					LLVMPositionBuilderAtEnd(ctx->builder, fast_bb);
-					data = LLVMBuildLoad2(ctx->builder, ctx->types[UPLPGSQL_PTR],
-										  na->data_ptr, "na.data");
-					idx0 = LLVMBuildSub(ctx->builder, idx_val, lb, "idx0");
-					gep = LLVMBuildGEP2(ctx->builder, na->llvm_elemtype,
-										data, &idx0, 1, "na.elem_ptr");
-					LLVMBuildStore(ctx->builder, val_result, gep);
+					ctx->builder->SetInsertPoint(fast_bb);
+					data = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->data_ptr, "na.data");
+					idx0 = ctx->builder->CreateSub(idx_val, lb, "idx0");
+					gep = ctx->builder->CreateGEP(na->llvm_elemtype, data, {idx0}, "na.elem_ptr");
+					ctx->builder->CreateStore(val_result, gep);
 
 					/*
 					 * The element now has a value, so clear its NULL flag —
@@ -4733,57 +4408,47 @@ not_native_init:
 					 * pointer means nothing in the array is NULL.
 					 */
 					{
-						LLVMValueRef		nulls, has;
-						LLVMBasicBlockRef	clr_bb, after_bb;
+						llvm::Value		*nulls, *has;
+						llvm::BasicBlock	*clr_bb, *after_bb;
 
-						nulls = LLVMBuildLoad2(ctx->builder,
-											   ctx->types[UPLPGSQL_PTR],
-											   na->nulls_ptr, "na.nulls");
-						has = LLVMBuildICmp(ctx->builder, LLVMIntNE, nulls,
-											LLVMConstNull(ctx->types[UPLPGSQL_PTR]),
-											"na.has.nulls");
+						nulls = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->nulls_ptr, "na.nulls");
+						has = ctx->builder->CreateICmpNE(nulls, llvm::Constant::getNullValue(ctx->types[UPLPGSQL_PTR]), "na.has.nulls");
 
 						clr_bb = expr_append_block(ctx, "na.set.clrnull");
 						after_bb = expr_append_block(ctx, "na.set.stored");
-						LLVMBuildCondBr(ctx->builder, has, clr_bb, after_bb);
+						ctx->builder->CreateCondBr(has, clr_bb, after_bb);
 
-						LLVMPositionBuilderAtEnd(ctx->builder, clr_bb);
+						ctx->builder->SetInsertPoint(clr_bb);
 						{
-							LLVMValueRef ngep;
+							llvm::Value *ngep;
 
-							ngep = LLVMBuildGEP2(ctx->builder,
-								ctx->types[UPLPGSQL_INT8], nulls, &idx0, 1,
-								"na.null.ptr");
-							LLVMBuildStore(ctx->builder,
-								LLVMConstInt(ctx->types[UPLPGSQL_INT8], 0,
-											 false),
-								ngep);
+							ngep = ctx->builder->CreateGEP(ctx->types[UPLPGSQL_INT8], nulls, {idx0}, "na.null.ptr");
+							ctx->builder->CreateStore(llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT8], 0, false), ngep);
 						}
-						LLVMBuildBr(ctx->builder, after_bb);
+						ctx->builder->CreateBr(after_bb);
 
-						LLVMPositionBuilderAtEnd(ctx->builder, after_bb);
+						ctx->builder->SetInsertPoint(after_bb);
 					}
-					LLVMBuildBr(ctx->builder, done_bb);
+					ctx->builder->CreateBr(done_bb);
 
 					/* Out of range, or not 1-D: let PostgreSQL do it. */
-					LLVMPositionBuilderAtEnd(ctx->builder, slow_bb);
+					ctx->builder->SetInsertPoint(slow_bb);
 					uplpgsql_emit_sync_native_array(ctx, na);
 					{
 						ArrayTypeInfo	ati;
-						LLVMValueRef	datum_val;
+						llvm::Value	*datum_val;
 
 						datum_val = native_to_datum(ctx, val_result, val_class);
 						resolve_array_type_info(ctx, array_dno, &ati);
 
 						{
-							LLVMValueRef args[] = {
+							llvm::Value *args[] = {
 								estate_ref,
-								LLVMConstInt(i32_ty, array_dno, false),
+								llvm::ConstantInt::get(i32_ty, array_dno, false),
 								idx_val,
 								datum_val,
 								val_isnull != NULL ? val_isnull
-									: LLVMConstInt(ctx->types[UPLPGSQL_INT1],
-												   0, false),	/* valisnull */
+									: llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 0, false),	/* valisnull */
 								ati.typlen_val,
 								ati.elemtype_val,
 								ati.elmlen_val,
@@ -4791,16 +4456,13 @@ not_native_init:
 								ati.elmalign_val
 							};
 
-							LLVMBuildCall2(ctx->builder,
-								ctx->rt_fntypes[RT_ARRAY_SET_ELEMENT],
-								ctx->rt_funcs[RT_ARRAY_SET_ELEMENT],
-								args, 10, "");
+							ctx->builder->CreateCall(ctx->rt_funcs[RT_ARRAY_SET_ELEMENT], args, "");
 						}
 					}
 					uplpgsql_emit_refresh_native_array(ctx, na);
-					LLVMBuildBr(ctx->builder, done_bb);
+					ctx->builder->CreateBr(done_bb);
 
-					LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+					ctx->builder->SetInsertPoint(done_bb);
 					return true;
 				}
 
@@ -4819,10 +4481,10 @@ not_native_init:
 					 *             int8 → already i64
 					 *             float8 → bitcast to i64
 					 */
-					LLVMValueRef idx_val, data, len, idx0, gep, elem;
-					LLVMValueRef na_lb;
-					LLVMBasicBlockRef null_bb, val_bb, get_done_bb;
-					LLVMTypeRef  i32_ty = ctx->types[UPLPGSQL_INT32];
+					llvm::Value *idx_val, *data, *len, *idx0, *gep, *elem;
+					llvm::Value *na_lb;
+					llvm::BasicBlock *null_bb, *val_bb, *get_done_bb;
+					llvm::Type  *i32_ty = ctx->types[UPLPGSQL_INT32];
 
 					elog(DEBUG1, "uplpgsql: native array get dno %d[idx] -> dno %d: %s",
 						 array_dno, stmt->varno, stmt->expr->query);
@@ -4839,18 +4501,17 @@ not_native_init:
 					 * emit_set_subscript_null_check).
 					 */
 					{
-						LLVMValueRef idx_isnull;
+						llvm::Value *idx_isnull;
 
 						idx_isnull = tier1_expr_any_null(ctx, idx_expr,
 														 estate_ref);
 						if (idx_isnull != NULL)
 						{
-							LLVMBasicBlockRef idxok_bb;
+							llvm::BasicBlock *idxok_bb;
 
 							idxok_bb = expr_append_block(ctx, "na.get.idxok");
-							LLVMBuildCondBr(ctx->builder, idx_isnull,
-											null_bb, idxok_bb);
-							LLVMPositionBuilderAtEnd(ctx->builder, idxok_bb);
+							ctx->builder->CreateCondBr(idx_isnull, null_bb, idxok_bb);
+							ctx->builder->SetInsertPoint(idxok_bb);
 						}
 					}
 
@@ -4858,10 +4519,8 @@ not_native_init:
 														  estate_ref,
 														  &idx_class);
 
-					len = LLVMBuildLoad2(ctx->builder, i32_ty,
-										 na->len_ptr, "na.len");
-					na_lb = LLVMBuildLoad2(ctx->builder, i32_ty,
-										   na->lb_ptr, "na.lb");
+					len = ctx->builder->CreateLoad(i32_ty, na->len_ptr, "na.len");
+					na_lb = ctx->builder->CreateLoad(i32_ty, na->lb_ptr, "na.lb");
 
 					/*
 					 * Out of range reads as SQL NULL, as it does in
@@ -4870,63 +4529,46 @@ not_native_init:
 					 * multi-dimensional value (len < 0).  This used to raise.
 					 */
 					{
-						LLVMValueRef	oob;
+						llvm::Value	*oob;
 
-						oob = LLVMBuildICmp(ctx->builder, LLVMIntSLT, len,
-											LLVMConstInt(i32_ty, 0, true),
-											"na.notflat");
-						oob = LLVMBuildOr(ctx->builder, oob,
-							LLVMBuildICmp(ctx->builder, LLVMIntSLT, idx_val,
-										  na_lb, "na.below"),
-							"na.oob");
-						oob = LLVMBuildOr(ctx->builder, oob,
-							LLVMBuildICmp(ctx->builder, LLVMIntSGT, idx_val,
-								LLVMBuildSub(ctx->builder,
-									LLVMBuildAdd(ctx->builder, na_lb, len,
-												 "na.end"),
-									LLVMConstInt(i32_ty, 1, false), "na.last"),
-								"na.above"),
-							"na.oob2");
+						oob = ctx->builder->CreateICmpSLT(len, llvm::ConstantInt::get(i32_ty, 0, true), "na.notflat");
+						oob = ctx->builder->CreateOr(oob, ctx->builder->CreateICmpSLT(idx_val, na_lb, "na.below"), "na.oob");
+						oob = ctx->builder->CreateOr(oob, ctx->builder->CreateICmpSGT(idx_val, ctx->builder->CreateSub(ctx->builder->CreateAdd(na_lb, len, "na.end"), llvm::ConstantInt::get(i32_ty, 1, false), "na.last"), "na.above"), "na.oob2");
 
 						val_bb = expr_append_block(ctx, "na.get.val");
 
-						LLVMBuildCondBr(ctx->builder, oob, null_bb, val_bb);
+						ctx->builder->CreateCondBr(oob, null_bb, val_bb);
 
-						LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
+						ctx->builder->SetInsertPoint(null_bb);
 						uplpgsql_emit_store_var_null(ctx, estate_ref,
 													 stmt->varno);
-						LLVMBuildBr(ctx->builder, get_done_bb);
+						ctx->builder->CreateBr(get_done_bb);
 
-						LLVMPositionBuilderAtEnd(ctx->builder, val_bb);
+						ctx->builder->SetInsertPoint(val_bb);
 					}
 
-					data = LLVMBuildLoad2(ctx->builder, ctx->types[UPLPGSQL_PTR],
-										  na->data_ptr, "na.data");
-					idx0 = LLVMBuildSub(ctx->builder, idx_val, na_lb, "idx0");
-					gep = LLVMBuildGEP2(ctx->builder, na->llvm_elemtype,
-										data, &idx0, 1, "na.elem_ptr");
-					elem = LLVMBuildLoad2(ctx->builder, na->llvm_elemtype,
-										  gep, "na.elem");
+					data = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_PTR], na->data_ptr, "na.data");
+					idx0 = ctx->builder->CreateSub(idx_val, na_lb, "idx0");
+					gep = ctx->builder->CreateGEP(na->llvm_elemtype, data, {idx0}, "na.elem_ptr");
+					elem = ctx->builder->CreateLoad(na->llvm_elemtype, gep, "na.elem");
 
 					/* Convert native type to Datum and store */
 					{
-						LLVMValueRef datum_val;
+						llvm::Value *datum_val;
 
 						if (na->elemtype == INT4OID)
-							datum_val = LLVMBuildSExt(ctx->builder, elem,
-								ctx->types[UPLPGSQL_INT64], "na.datum");
+							datum_val = ctx->builder->CreateSExt(elem, ctx->types[UPLPGSQL_INT64], "na.datum");
 						else if (na->elemtype == FLOAT8OID)
-							datum_val = LLVMBuildBitCast(ctx->builder, elem,
-								ctx->types[UPLPGSQL_INT64], "na.datum");
+							datum_val = ctx->builder->CreateBitCast(elem, ctx->types[UPLPGSQL_INT64], "na.datum");
 						else /* INT8OID */
 							datum_val = elem;
 
 						uplpgsql_emit_store_var_datum(ctx, estate_ref,
 													  stmt->varno, datum_val);
 					}
-					LLVMBuildBr(ctx->builder, get_done_bb);
+					ctx->builder->CreateBr(get_done_bb);
 
-					LLVMPositionBuilderAtEnd(ctx->builder, get_done_bb);
+					ctx->builder->SetInsertPoint(get_done_bb);
 					return true;
 				}
 
@@ -4936,10 +4578,10 @@ standard_array_path:
 					/*
 					 * Array element read: x := arr[i]
 					 */
-					LLVMValueRef idx_val, isnull_ptr, elem_datum, elem_isnull;
-					LLVMBasicBlockRef entry_bb;
-					LLVMBasicBlockRef null_bb = NULL;
-					LLVMBasicBlockRef done_bb = NULL;
+					llvm::Value *idx_val, *isnull_ptr, *elem_datum, *elem_isnull;
+					llvm::BasicBlock *entry_bb;
+					llvm::BasicBlock *null_bb = NULL;
+					llvm::BasicBlock *done_bb = NULL;
 
 					elog(DEBUG1, "uplpgsql: array get dno %d[idx] -> dno %d: %s",
 						 array_dno, stmt->varno, stmt->expr->query);
@@ -4952,27 +4594,26 @@ standard_array_path:
 					 * (see emit_set_subscript_null_check).
 					 */
 					{
-						LLVMValueRef idx_isnull;
+						llvm::Value *idx_isnull;
 
 						idx_isnull = tier1_expr_any_null(ctx, idx_expr,
 														 estate_ref);
 						if (idx_isnull != NULL)
 						{
-							LLVMBasicBlockRef idxok_bb;
+							llvm::BasicBlock *idxok_bb;
 
 							null_bb = expr_append_block(ctx, "arr.get.null");
 							done_bb = expr_append_block(ctx, "arr.get.done");
 							idxok_bb = expr_append_block(ctx, "arr.get.idxok");
 
-							LLVMBuildCondBr(ctx->builder, idx_isnull,
-											null_bb, idxok_bb);
+							ctx->builder->CreateCondBr(idx_isnull, null_bb, idxok_bb);
 
-							LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
+							ctx->builder->SetInsertPoint(null_bb);
 							uplpgsql_emit_store_var_null(ctx, estate_ref,
 														 stmt->varno);
-							LLVMBuildBr(ctx->builder, done_bb);
+							ctx->builder->CreateBr(done_bb);
 
-							LLVMPositionBuilderAtEnd(ctx->builder, idxok_bb);
+							ctx->builder->SetInsertPoint(idxok_bb);
 						}
 					}
 
@@ -4981,15 +4622,12 @@ standard_array_path:
 														  &idx_class);
 
 					/* Alloca for isNull output (must be in entry block) */
-					entry_bb = LLVMGetEntryBasicBlock(ctx->function);
+					entry_bb = &ctx->function->getEntryBlock();
 					{
-						LLVMBuilderRef tmp = LLVMCreateBuilderInContext(ctx->context);
+						llvm::IRBuilder<> tmp(*ctx->context);
 
-						LLVMPositionBuilderBefore(tmp,
-							LLVMGetFirstInstruction(entry_bb));
-						isnull_ptr = LLVMBuildAlloca(tmp,
-							ctx->types[UPLPGSQL_INT1], "arr_elem_isnull");
-						LLVMDisposeBuilder(tmp);
+						tmp.SetInsertPoint(entry_bb, entry_bb->begin());
+						isnull_ptr = tmp.CreateAlloca(ctx->types[UPLPGSQL_INT1], nullptr, "arr_elem_isnull");
 					}
 
 					{
@@ -4997,10 +4635,9 @@ standard_array_path:
 
 						resolve_array_type_info(ctx, array_dno, &ati);
 						{
-							LLVMValueRef args[] = {
+							llvm::Value *args[] = {
 								estate_ref,
-								LLVMConstInt(ctx->types[UPLPGSQL_INT32],
-											 array_dno, false),
+								llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], array_dno, false),
 								idx_val,
 								ati.typlen_val,
 								ati.elmlen_val,
@@ -5008,10 +4645,7 @@ standard_array_path:
 								ati.elmalign_val,
 								isnull_ptr
 							};
-							elem_datum = LLVMBuildCall2(ctx->builder,
-								ctx->rt_fntypes[RT_ARRAY_GET_ELEMENT],
-								ctx->rt_funcs[RT_ARRAY_GET_ELEMENT],
-								args, 8, "arr_elem");
+							elem_datum = ctx->builder->CreateCall(ctx->rt_funcs[RT_ARRAY_GET_ELEMENT], args, "arr_elem");
 						}
 					}
 
@@ -5021,9 +4655,7 @@ standard_array_path:
 					 * through isNull_out.  Storing the datum with isnull
 					 * hardwired false turned those into 0.
 					 */
-					elem_isnull = LLVMBuildLoad2(ctx->builder,
-												 ctx->types[UPLPGSQL_INT1],
-												 isnull_ptr, "arr_elem_isnull");
+					elem_isnull = ctx->builder->CreateLoad(ctx->types[UPLPGSQL_INT1], isnull_ptr, "arr_elem_isnull");
 					uplpgsql_emit_store_var_datum_isnull(ctx, estate_ref,
 														 stmt->varno,
 														 elem_datum,
@@ -5031,8 +4663,8 @@ standard_array_path:
 
 					if (done_bb != NULL)
 					{
-						LLVMBuildBr(ctx->builder, done_bb);
-						LLVMPositionBuilderAtEnd(ctx->builder, done_bb);
+						ctx->builder->CreateBr(done_bb);
+						ctx->builder->SetInsertPoint(done_bb);
 					}
 					return true;
 				}
@@ -5050,8 +4682,8 @@ standard_array_path:
 					val_class = uplpgsql_classify_expr(val_expr);
 					if (val_class != EXPR_TYPE_UNKNOWN)
 					{
-						LLVMValueRef idx_val, val_result, val_datum;
-						LLVMValueRef val_isnull;
+						llvm::Value *idx_val, *val_result, *val_datum;
+						llvm::Value *val_isnull;
 
 						elog(DEBUG1, "uplpgsql: array set dno %d[idx] := val: %s",
 							 array_dno, stmt->expr->query);
@@ -5074,18 +4706,16 @@ standard_array_path:
 																 &val_isnull);
 						val_datum = native_to_datum(ctx, val_result, val_class);
 						if (val_isnull == NULL)
-							val_isnull = LLVMConstInt(ctx->types[UPLPGSQL_INT1],
-													  0, false);
+							val_isnull = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 0, false);
 
 						{
 							ArrayTypeInfo ati;
 
 							resolve_array_type_info(ctx, array_dno, &ati);
 							{
-								LLVMValueRef args[] = {
+								llvm::Value *args[] = {
 									estate_ref,
-									LLVMConstInt(ctx->types[UPLPGSQL_INT32],
-												 array_dno, false),
+									llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT32], array_dno, false),
 									idx_val,
 									val_datum,
 									val_isnull,
@@ -5095,10 +4725,7 @@ standard_array_path:
 									ati.elmbyval_val,
 									ati.elmalign_val
 								};
-								LLVMBuildCall2(ctx->builder,
-									ctx->rt_fntypes[RT_ARRAY_SET_ELEMENT],
-									ctx->rt_funcs[RT_ARRAY_SET_ELEMENT],
-									args, 10, "");
+								ctx->builder->CreateCall(ctx->rt_funcs[RT_ARRAY_SET_ELEMENT], args, "");
 							}
 						}
 						return true;
@@ -5131,11 +4758,11 @@ standard_array_path:
 bool
 uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 						  UPLpgSQL_expr *expr_node,
-						  LLVMValueRef *result_out)
+						  llvm::Value **result_out)
 {
 	Expr		   *expr;
 	ExprTypeClass	tc;
-	LLVMValueRef	estate_ref;
+	llvm::Value	*estate_ref;
 
 	/*
 	 * Some conditions must not be planned at compile time — see
@@ -5155,11 +4782,11 @@ uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 	tc = uplpgsql_classify_expr(expr);
 	if (tc == EXPR_TYPE_BOOL)
 	{
-		LLVMValueRef	any_null, val;
+		llvm::Value	*any_null, *val;
 
 		elog(DEBUG1, "uplpgsql: inlining bool expression: %s", expr_node->query);
 
-		estate_ref = LLVMGetParam(ctx->function, 0);
+		estate_ref = ctx->function->getArg(0);
 		any_null = tier1_expr_any_null(ctx, expr, estate_ref);
 
 		if (any_null == NULL)
@@ -5175,39 +4802,34 @@ uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 		 * computing it on a NULL variable's datum.
 		 */
 		{
-			LLVMBasicBlockRef	compute_bb, null_bb, merge_bb, from_bb;
-			LLVMValueRef		phi;
-			LLVMValueRef		vals[2];
-			LLVMBasicBlockRef	blocks[2];
+			llvm::BasicBlock	*compute_bb, *null_bb, *merge_bb, *from_bb;
+			llvm::PHINode		*phi;
+			llvm::Value		*vals[2];
+			llvm::BasicBlock	*blocks[2];
 
-			compute_bb = LLVMAppendBasicBlockInContext(ctx->context,
-													   ctx->function,
-													   "t1b.notnull");
-			null_bb = LLVMAppendBasicBlockInContext(ctx->context,
-													ctx->function, "t1b.null");
-			merge_bb = LLVMAppendBasicBlockInContext(ctx->context,
-													 ctx->function,
-													 "t1b.done");
+			compute_bb = llvm::BasicBlock::Create(*ctx->context, "t1b.notnull", ctx->function);
+			null_bb = llvm::BasicBlock::Create(*ctx->context, "t1b.null", ctx->function);
+			merge_bb = llvm::BasicBlock::Create(*ctx->context, "t1b.done", ctx->function);
 
-			LLVMBuildCondBr(ctx->builder, any_null, null_bb, compute_bb);
+			ctx->builder->CreateCondBr(any_null, null_bb, compute_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, compute_bb);
+			ctx->builder->SetInsertPoint(compute_bb);
 			val = uplpgsql_compile_expr_bool(ctx, expr, estate_ref);
 			/* the comparison may have added blocks; branch from the current one */
-			from_bb = LLVMGetInsertBlock(ctx->builder);
-			LLVMBuildBr(ctx->builder, merge_bb);
+			from_bb = ctx->builder->GetInsertBlock();
+			ctx->builder->CreateBr(merge_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, null_bb);
-			LLVMBuildBr(ctx->builder, merge_bb);
+			ctx->builder->SetInsertPoint(null_bb);
+			ctx->builder->CreateBr(merge_bb);
 
-			LLVMPositionBuilderAtEnd(ctx->builder, merge_bb);
-			phi = LLVMBuildPhi(ctx->builder, ctx->types[UPLPGSQL_INT1],
-							   "t1b.result");
+			ctx->builder->SetInsertPoint(merge_bb);
+			phi = ctx->builder->CreatePHI(ctx->types[UPLPGSQL_INT1], 2, "t1b.result");
 			vals[0] = val;
 			blocks[0] = from_bb;
-			vals[1] = LLVMConstInt(ctx->types[UPLPGSQL_INT1], 0, false);
+			vals[1] = llvm::ConstantInt::get(ctx->types[UPLPGSQL_INT1], 0, false);
 			blocks[1] = null_bb;
-			LLVMAddIncoming(phi, vals, blocks, 2);
+			phi->addIncoming(vals[0], blocks[0]);
+			phi->addIncoming(vals[1], blocks[1]);
 
 			*result_out = phi;
 		}
@@ -5217,15 +4839,15 @@ uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 	/* Tier 2: fmgr bypass — result is Datum, truncate to i1 */
 	if (uplpgsql_can_fmgr_compile(expr))
 	{
-		LLVMValueRef	datum_result;
-		LLVMValueRef	isnull_val = NULL;
+		llvm::Value	*datum_result;
+		llvm::Value	*isnull_val = NULL;
 		bool			scoped = fmgr_expr_wants_alloc_scope(ctx, expr);
-		LLVMValueRef	old = NULL;
+		llvm::Value	*old = NULL;
 
 		elog(DEBUG1, "uplpgsql: fmgr bypass bool expression: %s",
 			 expr_node->query);
 
-		estate_ref = LLVMGetParam(ctx->function, 0);
+		estate_ref = ctx->function->getArg(0);
 
 		/*
 		 * A condition can allocate through an intermediate too --
@@ -5236,22 +4858,18 @@ uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 		 */
 		if (scoped)
 		{
-			LLVMValueRef a[] = { estate_ref };
+			llvm::Value *a[] = { estate_ref };
 
-			old = LLVMBuildCall2(ctx->builder,
-				ctx->rt_fntypes[RT_ALLOC_SCOPE_ENTER],
-				ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, 1, "scope.old");
+			old = ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_ENTER], a, "scope.old");
 		}
 
 		datum_result = uplpgsql_compile_expr_fmgr_full(ctx, expr, estate_ref,
 													   &isnull_val);
 		if (datum_result != NULL)
 		{
-			LLVMValueRef	val;
+			llvm::Value	*val;
 
-			val = LLVMBuildTrunc(ctx->builder, datum_result,
-								 ctx->types[UPLPGSQL_INT1],
-								 "fmgr.bool.result");
+			val = ctx->builder->CreateTrunc(datum_result, ctx->types[UPLPGSQL_INT1], "fmgr.bool.result");
 
 			/*
 			 * IF/WHILE/EXIT WHEN treat a NULL condition as not-true, so fold
@@ -5259,28 +4877,21 @@ uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 			 * true datum with isnull set, and without this it would take the
 			 * THEN branch.
 			 */
-			*result_out = LLVMBuildAnd(ctx->builder, val,
-									   LLVMBuildNot(ctx->builder, isnull_val,
-													"fmgr.bool.notnull"),
-									   "fmgr.bool.cond");
+			*result_out = ctx->builder->CreateAnd(val, ctx->builder->CreateNot(isnull_val, "fmgr.bool.notnull"), "fmgr.bool.cond");
 			if (scoped)
 			{
-				LLVMValueRef a[] = { estate_ref, old };
+				llvm::Value *a[] = { estate_ref, old };
 
-				LLVMBuildCall2(ctx->builder,
-					ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-					ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, 2, "");
+				ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 			}
 			return true;
 		}
 		/* fmgr_full bailed: restore the context before Tier 3 */
 		if (scoped)
 		{
-			LLVMValueRef a[] = { estate_ref, old };
+			llvm::Value *a[] = { estate_ref, old };
 
-			LLVMBuildCall2(ctx->builder,
-				ctx->rt_fntypes[RT_ALLOC_SCOPE_EXIT],
-				ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, 2, "");
+			ctx->builder->CreateCall(ctx->rt_funcs[RT_ALLOC_SCOPE_EXIT], a, "");
 		}
 		/* Fall through to Tier 3 */
 	}

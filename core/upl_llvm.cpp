@@ -1,9 +1,9 @@
 /*-------------------------------------------------------------------------
  *
- * upl_llvm.c
- *		Low-level LLVM C API utilities for UPL Core Engine.
+ * upl_llvm.cpp
+ *		LLVM infrastructure for the UPL Core Engine.
  *
- *		This file manages the LLVM infrastructure that underlies the JIT
+ *		This file manages the LLVM machinery that underlies the JIT
  *		compiler.  It is completely language-agnostic — it knows nothing
  *		about statements, expressions, or any specific procedural language.
  *
@@ -28,16 +28,15 @@
  *		  a specified optimization level (O0-O3).  Uses the target machine
  *		  for target-specific optimizations.
  *
- *		upl_jit_compile()     — The final step: serializes the module
- *		  to bitcode, deserializes in a new OrcJIT ThreadSafeContext (because
- *		  the LLVM C API doesn't support moving modules between contexts),
- *		  adds the module to LLJIT, and looks up the function symbol to
- *		  return a native function pointer.
+ *		upl_jit_compile()     — The final step: moves the module and its
+ *		  context into an orc::ThreadSafeModule (no serialization — with
+ *		  the C++ API a module changes hands by move; the old C-API
+ *		  implementation had to round-trip through bitcode), adds it to
+ *		  LLJIT, and looks up the function symbol to return a native
+ *		  function pointer.
  *
  *		Design notes:
  *		  - One LLJIT per backend (not per function) to amortize setup cost
- *		  - Bitcode round-trip is the only portable way to transfer modules
- *		    to OrcJIT's context via the LLVM C API
  *		  - Old compiled functions are intentionally leaked because LLJIT
  *		    doesn't support cheap per-function removal
  *
@@ -63,28 +62,82 @@
  */
 #include "upl.h"
 
-#ifdef __cplusplus
-extern "C" {
+/* See doc/cpp-rewrite.md on the _/gettext dance around LLVM C++ headers. */
+#undef _
+#undef gettext
+
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/ExecutionEngine/Orc/ExecutionUtils.h>
+#include <llvm/ExecutionEngine/Orc/LLJIT.h>
+#include <llvm/ExecutionEngine/Orc/ThreadSafeModule.h>
+#include <llvm/IR/Verifier.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Support/Error.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/Triple.h>
+
+#ifndef ENABLE_NLS
+#define gettext(x) (x)
 #endif
-#include "miscadmin.h"
-#ifdef __cplusplus
-}
-#endif
+#define _(x) gettext(x)
+
+#include <string>
+
+namespace {
 
 /*
  * Per-backend LLVM state.
  *
- * upl_jit_instance: the single LLJIT instance shared by all compiled
- *   functions in this backend.  Created once in upl_llvm_init().
+ * jit_instance: the single LLJIT instance shared by all compiled functions
+ *   in this backend.  Created once in upl_llvm_init().
  *
- * upl_target_machine: used for optimization passes (the new pass manager
- *   needs a target machine to apply target-specific transformations).
+ * target_machine: used for optimization passes (the new pass manager needs
+ *   a target machine to apply target-specific transformations).
  *
- * upl_llvm_initialized: prevents double initialization.
+ * llvm_initialized: prevents double initialization.
  */
-static LLVMOrcLLJITRef upl_jit_instance = NULL;
-static LLVMTargetMachineRef upl_target_machine = NULL;
-static bool upl_llvm_initialized = false;
+std::unique_ptr<llvm::orc::LLJIT> jit_instance;
+std::unique_ptr<llvm::TargetMachine> target_machine;
+bool llvm_initialized = false;
+
+/*
+ * Render an llvm::Error into a palloc'd string, consuming the error.
+ */
+char *
+error_to_pstr(llvm::Error err)
+{
+	std::string s = llvm::toString(std::move(err));
+
+	return pstrdup(s.c_str());
+}
+
+/*
+ * The host CPU's feature string, in the "+feat1,-feat2,..." form
+ * createTargetMachine() expects.
+ */
+std::string
+host_cpu_features()
+{
+	std::string features;
+
+	for (const auto &[name, enabled] : llvm::sys::getHostCPUFeatures())
+	{
+		features += (enabled ? '+' : '-');
+		features += name.str();
+		features += ',';
+	}
+	if (!features.empty())
+		features.pop_back();
+
+	return features;
+}
+
+} // namespace
 
 /*
  * upl_llvm_init - Initialize LLVM (once per process)
@@ -92,118 +145,78 @@ static bool upl_llvm_initialized = false;
 void
 upl_llvm_init(void)
 {
-	if (upl_llvm_initialized)
+	if (llvm_initialized)
 		return;
 
-	LLVMInitializeNativeTarget();
-	LLVMInitializeNativeAsmPrinter();
-	LLVMInitializeNativeAsmParser();
+	llvm::InitializeNativeTarget();
+	llvm::InitializeNativeTargetAsmPrinter();
+	llvm::InitializeNativeTargetAsmParser();
 
 	/*
 	 * Create target machine (used for optimization passes).
 	 *
 	 * Guarded so that a retry — reached when a step below elog(ERROR)s and
-	 * longjmps out before upl_llvm_initialized is set — reuses the machine
+	 * longjmps out before llvm_initialized is set — reuses the machine
 	 * built by the failed attempt instead of leaking it and building another.
 	 */
-	if (upl_target_machine == NULL)
+	if (target_machine == nullptr)
 	{
-		char		   *triple;
-		char		   *error;
-		LLVMTargetRef	target;
+		llvm::Triple triple(llvm::sys::getDefaultTargetTriple());
+		std::string error;
+		const llvm::Target *target =
+			llvm::TargetRegistry::lookupTarget(triple, error);
 
-		triple = LLVMGetDefaultTargetTriple();
+		if (target == nullptr)
+			elog(ERROR, "upl: failed to get LLVM target: %s",
+				 pstrdup(error.c_str()));
 
-		if (LLVMGetTargetFromTriple(triple, &target, &error))
-		{
-			char *msg = pstrdup(error);
-
-			LLVMDisposeMessage(error);
-			LLVMDisposeMessage(triple);
-			elog(ERROR, "upl: failed to get LLVM target: %s", msg);
-		}
-
-		{
-			char *host_cpu = LLVMGetHostCPUName();
-			char *host_features = LLVMGetHostCPUFeatures();
-
-			upl_target_machine = LLVMCreateTargetMachine(
-				target,
-				triple,
-				host_cpu,
-				host_features,
-				LLVMCodeGenLevelAggressive,
-				LLVMRelocDefault,
-				LLVMCodeModelJITDefault);
-
-			LLVMDisposeMessage(host_cpu);
-			LLVMDisposeMessage(host_features);
-		}
+		target_machine.reset(target->createTargetMachine(
+			triple,
+			llvm::sys::getHostCPUName(),
+			host_cpu_features(),
+			llvm::TargetOptions(),
+			llvm::Reloc::PIC_,
+			/* code model: JIT default */ std::nullopt,
+			llvm::CodeGenOptLevel::Aggressive));
 
 		/*
-		 * LLVMCreateTargetMachine reports failure by returning NULL; it has
-		 * no error-message out-param, so name the triple we failed on.
+		 * createTargetMachine reports failure by returning null; it has no
+		 * error-message out-param, so name the triple we failed on.
 		 */
-		if (upl_target_machine == NULL)
-		{
-			char *msg = pstrdup(triple);
-
-			LLVMDisposeMessage(triple);
+		if (target_machine == nullptr)
 			elog(ERROR, "upl: failed to create LLVM target machine for %s",
-				 msg);
-		}
-
-		LLVMDisposeMessage(triple);
+				 pstrdup(triple.str().c_str()));
 	}
 
 	/*
-	 * Create OrcJIT instance
+	 * Create the OrcJIT instance, with a process-symbol search generator so
+	 * runtime helpers are automatically resolvable from JIT'd code.
 	 */
 	{
-		LLVMOrcLLJITBuilderRef	builder;
-		LLVMErrorRef			err;
+		auto jit = llvm::orc::LLJITBuilder().create();
 
-		builder = LLVMOrcCreateLLJITBuilder();
+		if (!jit)
+			elog(ERROR, "upl: failed to create OrcJIT: %s",
+				 error_to_pstr(jit.takeError()));
 
-		err = LLVMOrcCreateLLJIT(&upl_jit_instance, builder);
-		if (err)
-		{
-			char *msg = LLVMGetErrorMessage(err);
+		auto gen = llvm::orc::DynamicLibrarySearchGenerator::GetForCurrentProcess(
+			(*jit)->getDataLayout().getGlobalPrefix());
 
-			elog(ERROR, "upl: failed to create OrcJIT: %s", msg);
-		}
+		if (!gen)
+			elog(ERROR, "upl: failed to create symbol generator: %s",
+				 error_to_pstr(gen.takeError()));
 
-		/*
-		 * Register process symbols so runtime helpers are automatically
-		 * resolvable from JIT'd code.
-		 */
-		{
-			LLVMOrcDefinitionGeneratorRef	gen;
-			LLVMOrcJITDylibRef				dylib;
-
-			err = LLVMOrcCreateDynamicLibrarySearchGeneratorForProcess(
-				&gen,
-				LLVMOrcLLJITGetGlobalPrefix(upl_jit_instance),
-				NULL, NULL);
-			if (err)
-			{
-				char *msg = LLVMGetErrorMessage(err);
-
-				elog(ERROR, "upl: failed to create symbol generator: %s", msg);
-			}
-
-			dylib = LLVMOrcLLJITGetMainJITDylib(upl_jit_instance);
-			LLVMOrcJITDylibAddGenerator(dylib, gen);
-		}
+		(*jit)->getMainJITDylib().addGenerator(std::move(*gen));
+		jit_instance = std::move(*jit);
 	}
 
 	/*
 	 * Set last, once the target machine and JIT instance both exist.  The
 	 * steps above elog(ERROR) on failure, which longjmps out; setting the
 	 * flag any earlier would make a retry short-circuit above and leave
-	 * upl_jit_instance NULL for the life of the backend.
+	 * jit_instance null for the life of the backend.
 	 */
-	upl_llvm_initialized = true;
+	llvm_initialized = true;
 
 	elog(DEBUG1, "upl: LLVM %d.%d initialized, OrcJIT ready",
 		 LLVM_VERSION_MAJOR, LLVM_VERSION_MINOR);
@@ -215,26 +228,8 @@ upl_llvm_init(void)
 void
 upl_llvm_shutdown(void)
 {
-	if (upl_jit_instance)
-	{
-		LLVMOrcDisposeLLJIT(upl_jit_instance);
-		upl_jit_instance = NULL;
-	}
-	if (upl_target_machine)
-	{
-		LLVMDisposeTargetMachine(upl_target_machine);
-		upl_target_machine = NULL;
-	}
-}
-
-/*
- * upl_get_jit - Get the per-backend OrcJIT instance
- */
-LLVMOrcLLJITRef
-upl_get_jit(void)
-{
-	Assert(upl_jit_instance != NULL);
-	return upl_jit_instance;
+	jit_instance.reset();
+	target_machine.reset();
 }
 
 /*
@@ -249,181 +244,102 @@ upl_register_types(UPL_compile_ctx *ctx)
 	 * supported builds are 64-bit; fail at compile time rather than at run
 	 * time if that ever changes.
 	 */
-	StaticAssertStmt(sizeof(void *) == 8,
-					 "UPL assumes 64-bit pointers");
+	static_assert(sizeof(void *) == 8, "UPL assumes 64-bit pointers");
 
-	ctx->types[UPL_VOID]   = LLVMVoidTypeInContext(ctx->context);
-	ctx->types[UPL_INT1]   = LLVMInt1TypeInContext(ctx->context);
-	ctx->types[UPL_INT8]   = LLVMInt8TypeInContext(ctx->context);
-	ctx->types[UPL_INT16]  = LLVMInt16TypeInContext(ctx->context);
-	ctx->types[UPL_INT32]  = LLVMInt32TypeInContext(ctx->context);
-	ctx->types[UPL_INT64]  = LLVMInt64TypeInContext(ctx->context);
-	ctx->types[UPL_DOUBLE] = LLVMDoubleTypeInContext(ctx->context);
-	ctx->types[UPL_PTR]    = LLVMPointerTypeInContext(ctx->context, 0);
-	ctx->types[UPL_INTPTR] = LLVMInt64TypeInContext(ctx->context);	/* 64-bit platforms */
+	llvm::LLVMContext &c = *ctx->context;
+
+	ctx->types[UPL_VOID]   = llvm::Type::getVoidTy(c);
+	ctx->types[UPL_INT1]   = llvm::Type::getInt1Ty(c);
+	ctx->types[UPL_INT8]   = llvm::Type::getInt8Ty(c);
+	ctx->types[UPL_INT16]  = llvm::Type::getInt16Ty(c);
+	ctx->types[UPL_INT32]  = llvm::Type::getInt32Ty(c);
+	ctx->types[UPL_INT64]  = llvm::Type::getInt64Ty(c);
+	ctx->types[UPL_DOUBLE] = llvm::Type::getDoubleTy(c);
+	ctx->types[UPL_PTR]    = llvm::PointerType::getUnqual(c);
+	ctx->types[UPL_INTPTR] = llvm::Type::getInt64Ty(c);	/* 64-bit platforms */
 	ctx->types[UPL_DATUM]  = ctx->types[UPL_INT64];
 
 	/* Function type: int32 func(ptr estate) */
-	{
-		LLVMTypeRef params[] = { ctx->types[UPL_PTR] };
-
-		ctx->types[UPL_FUNC_TYPE] = LLVMFunctionType(
-			ctx->types[UPL_INT32], params, 1, false);
-	}
+	ctx->types[UPL_FUNC_TYPE] = llvm::FunctionType::get(
+		ctx->types[UPL_INT32], {ctx->types[UPL_PTR]}, false);
 }
 
 /*
  * upl_verify_module - Verify LLVM module IR is well-formed
  */
 void
-upl_verify_module(LLVMModuleRef module)
+upl_verify_module(llvm::Module &module)
 {
-	char *error = NULL;
+	std::string error;
+	llvm::raw_string_ostream os(error);
 
-	if (LLVMVerifyModule(module, LLVMReturnStatusAction, &error))
-	{
-		char *msg = pstrdup(error);
-
-		LLVMDisposeMessage(error);
-		elog(ERROR, "upl: LLVM module verification failed: %s", msg);
-	}
-
-	if (error)
-		LLVMDisposeMessage(error);
+	if (llvm::verifyModule(module, &os))
+		elog(ERROR, "upl: LLVM module verification failed: %s",
+			 pstrdup(os.str().c_str()));
 }
 
 /*
  * upl_optimize_module - Run LLVM optimization passes
  */
 void
-upl_optimize_module(LLVMModuleRef module, int level)
+upl_optimize_module(llvm::Module &module, int level)
 {
-	const char *passes[] = {
-		"default<O0>",
-		"default<O1>",
-		"default<O2>",
-		"default<O3>"
+	static const llvm::OptimizationLevel levels[] = {
+		llvm::OptimizationLevel::O0,
+		llvm::OptimizationLevel::O1,
+		llvm::OptimizationLevel::O2,
+		llvm::OptimizationLevel::O3,
 	};
-	LLVMPassBuilderOptionsRef	opts;
-	LLVMErrorRef				err;
 
 	if (level < 0 || level > 3)
 		level = 2;
 
-	opts = LLVMCreatePassBuilderOptions();
+	llvm::LoopAnalysisManager lam;
+	llvm::FunctionAnalysisManager fam;
+	llvm::CGSCCAnalysisManager cgam;
+	llvm::ModuleAnalysisManager mam;
+	llvm::PassBuilder pb(target_machine.get());
 
-	err = LLVMRunPasses(module, passes[level], upl_target_machine, opts);
-	if (err)
-	{
-		char *msg = LLVMGetErrorMessage(err);
-		char *pstr = pstrdup(msg);
+	pb.registerModuleAnalyses(mam);
+	pb.registerCGSCCAnalyses(cgam);
+	pb.registerFunctionAnalyses(fam);
+	pb.registerLoopAnalyses(lam);
+	pb.crossRegisterProxies(lam, fam, cgam, mam);
 
-		LLVMDisposeErrorMessage(msg);
-		LLVMDisposePassBuilderOptions(opts);
-		elog(ERROR, "upl: LLVMRunPasses failed: %s", pstr);
-	}
+	llvm::ModulePassManager mpm =
+		(level == 0) ? pb.buildO0DefaultPipeline(levels[level])
+					 : pb.buildPerModuleDefaultPipeline(levels[level]);
 
-	LLVMDisposePassBuilderOptions(opts);
+	mpm.run(module, mam);
 }
 
 /*
  * upl_jit_compile - Add module to OrcJIT and look up a function.
  *
- * Takes ownership of the module. Returns the native function pointer.
+ * Takes ownership of the module and its context (they move into OrcJIT's
+ * ThreadSafeModule).  Returns the native function pointer.
  */
 void *
-upl_jit_compile(LLVMModuleRef module, LLVMContextRef context,
+upl_jit_compile(std::unique_ptr<llvm::Module> module,
+				std::unique_ptr<llvm::LLVMContext> context,
 				const char *func_name)
 {
-	LLVMOrcThreadSafeContextRef		ts_ctx;
-	LLVMOrcThreadSafeModuleRef		ts_mod;
-	LLVMOrcJITDylibRef				dylib;
-	LLVMOrcExecutorAddress			addr;
-	LLVMErrorRef					err;
+	llvm::orc::ThreadSafeModule tsm(std::move(module), std::move(context));
 
-	/*
-	 * We need to transfer the module to a fresh context owned by OrcJIT.
-	 * Since LLVM C API doesn't support transferring modules between contexts,
-	 * we serialize to bitcode and deserialize in a new context.
-	 *
-	 * As of LLVM 15+, LLVMOrcThreadSafeContextGetContext() was removed and
-	 * ownership was inverted: the caller creates the LLVMContext, parses the
-	 * module into it, then hands it to a ThreadSafeContext via
-	 * LLVMOrcCreateNewThreadSafeContextFromLLVMContext(), which takes
-	 * ownership of the context.
-	 */
-	{
-		LLVMMemoryBufferRef		buf;
-		LLVMModuleRef			new_module;
-		LLVMContextRef			new_ctx;
-
-		/* Serialize to bitcode */
-		buf = LLVMWriteBitcodeToMemoryBuffer(module);
-
-		/* Create a fresh context and parse the bitcode into it */
-		new_ctx = LLVMContextCreate();
-
-		if (LLVMParseBitcodeInContext2(new_ctx, buf, &new_module))
-		{
-			LLVMDisposeMemoryBuffer(buf);
-			LLVMContextDispose(new_ctx);
-			LLVMDisposeModule(module);
-			elog(ERROR, "upl: failed to parse bitcode in OrcJIT context");
-		}
-
-		/*
-		 * LLVMParseBitcodeInContext2 reads through a non-owning
-		 * MemoryBufferRef, so the buffer is ours to release.  The error path
-		 * above already did; do it here too or every compile leaks the whole
-		 * serialized module.
-		 */
-		LLVMDisposeMemoryBuffer(buf);
-
-		/*
-		 * Wrap the fresh context in a ThreadSafeContext (takes ownership of
-		 * new_ctx), then wrap the module (takes ownership of new_module).
-		 */
-		ts_ctx = LLVMOrcCreateNewThreadSafeContextFromLLVMContext(new_ctx);
-		ts_mod = LLVMOrcCreateNewThreadSafeModule(new_module, ts_ctx);
-
-		/*
-		 * The ThreadSafeModule holds its own reference to the context, and
-		 * ownership of the TSCtx handle stays with us, so this handle is now
-		 * redundant.  Dispose it here rather than only on the error path
-		 * below — the context itself survives, held by ts_mod.
-		 */
-		LLVMOrcDisposeThreadSafeContext(ts_ctx);
-
-		/* Dispose original module (we have the copy now) */
-		LLVMDisposeModule(module);
-	}
-
-	/* Add module to OrcJIT — takes ownership of ts_mod */
-	dylib = LLVMOrcLLJITGetMainJITDylib(upl_jit_instance);
-	err = LLVMOrcLLJITAddLLVMIRModule(upl_jit_instance, dylib, ts_mod);
-	if (err)
-	{
-		char *msg = LLVMGetErrorMessage(err);
-		char *pstr = pstrdup(msg);
-
-		LLVMDisposeErrorMessage(msg);
-		/* ts_ctx is already disposed; AddLLVMIRModule consumes ts_mod even on error */
-		elog(ERROR, "upl: failed to add module to OrcJIT: %s", pstr);
-	}
+	if (llvm::Error err = jit_instance->addIRModule(std::move(tsm)))
+		elog(ERROR, "upl: failed to add module to OrcJIT: %s",
+			 error_to_pstr(std::move(err)));
 
 	/* Look up the compiled function */
-	err = LLVMOrcLLJITLookup(upl_jit_instance, &addr, func_name);
-	if (err)
-	{
-		char *msg = LLVMGetErrorMessage(err);
-		char *pstr = pstrdup(msg);
+	auto sym = jit_instance->lookup(func_name);
 
-		LLVMDisposeErrorMessage(msg);
+	if (!sym)
 		elog(ERROR, "upl: symbol lookup failed for %s: %s",
-			 func_name, pstr);
-	}
+			 func_name, error_to_pstr(sym.takeError()));
 
-	elog(DEBUG1, "upl: JIT compiled %s at %p", func_name, (void *)(uintptr_t)addr);
+	void	   *addr = sym->toPtr<void *>();
 
-	return (void *)(uintptr_t)addr;
+	elog(DEBUG1, "upl: JIT compiled %s at %p", func_name, addr);
+
+	return addr;
 }

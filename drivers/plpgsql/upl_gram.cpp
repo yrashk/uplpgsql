@@ -558,7 +558,7 @@ typedef union YYSTYPE
 	UPLpgSQL_case_when *casewhen;
 }
 /* Line 193 of yacc.c.  */
-#line 562 "upl_gram.c"
+#line 562 "upl_gram.cpp"
 	YYSTYPE;
 # define yystype YYSTYPE /* obsolescent; will be withdrawn */
 # define YYSTYPE_IS_DECLARED 1
@@ -583,7 +583,7 @@ typedef struct YYLTYPE
 
 
 /* Line 216 of yacc.c.  */
-#line 587 "upl_gram.c"
+#line 587 "upl_gram.cpp"
 
 #ifdef short
 # undef short
@@ -4801,7 +4801,7 @@ yyreduce:
 
 
 /* Line 1267 of yacc.c.  */
-#line 4805 "upl_gram.c"
+#line 4805 "upl_gram.cpp"
       default: break;
     }
   YY_SYMBOL_PRINT ("-> $$ =", yyr1[yyn], &yyval, &yyloc);

@@ -8,6 +8,11 @@
  *		that every UPL language driver uses.  Language-specific types
  *		(exec state, AST nodes, runtime helpers) remain in the driver.
  *
+ *		The compiler is built on the LLVM C++ API: a compilation owns its
+ *		llvm::LLVMContext and llvm::Module and emits IR through an
+ *		llvm::IRBuilder; upl_jit_compile() moves both into OrcJIT's
+ *		ThreadSafeModule without any serialization round-trip.
+ *
  *		Key types:
  *		  - UPL_compile_ctx: per-compilation LLVM context and state
  *		  - UPL_func: cached compiled function (function pointer + identity)
@@ -44,35 +49,45 @@
 #ifndef UPL_H
 #define UPL_H
 
-#ifdef __cplusplus
 extern "C" {
-#endif
 #include "postgres.h"
 #include "fmgr.h"
 #include "access/transam.h"
 #include "storage/itemptr.h"
-#ifdef __cplusplus
 }
-#endif
 
-#include <llvm-c/Core.h>
-#include <llvm-c/Analysis.h>
-#include <llvm-c/BitReader.h>
-#include <llvm-c/BitWriter.h>
-#include <llvm-c/LLJIT.h>
-#include <llvm-c/Orc.h>
-#include <llvm-c/OrcEE.h>
-#include <llvm-c/TargetMachine.h>
-#include <llvm-c/Transforms/PassBuilder.h>
+/*
+ * Postgres macros that collide with LLVM C++ headers.  PG's _ macro
+ * otherwise rewrites LLVM's `ErrorAsOutParameter _(Err);` into a shadowing
+ * declaration and silently changes behavior (see doc/cpp-rewrite.md).
+ * Both are restored right after the LLVM includes.
+ */
+#undef _
+#undef gettext
 
-#ifdef __cplusplus
-extern "C" {
+#include <llvm/IR/IRBuilder.h>
+#include <llvm/IR/LLVMContext.h>
+#include <llvm/IR/Module.h>
+
+/*
+ * Restore the translation macros exactly as c.h defines them.  Headers
+ * included after this one (e.g. upl_plpgsql.h) may redefine _ with a
+ * specific TEXTDOMAIN, as in Postgres itself.
+ */
+#ifndef ENABLE_NLS
+#define gettext(x) (x)
 #endif
+#define _(x) gettext(x)
+
+#include <array>
+#include <memory>
+#include <vector>
 
 /*
  * Macro for functions that must be visible to OrcJIT's process symbol search.
  * We build with -fvisibility=hidden, so runtime helpers called from JIT'd
- * code must be explicitly marked visible.
+ * code must be explicitly marked visible (and, being resolved by name, must
+ * also have C linkage).
  */
 #define UPL_RT_EXPORT __attribute__((visibility("default")))
 
@@ -98,7 +113,7 @@ typedef enum UPL_llvm_type
 } UPL_llvm_type;
 
 /*
- * Loop tracking for EXIT/CONTINUE — singly-linked stack.
+ * Loop tracking for EXIT/CONTINUE — a stack (ctx->loop_stack).
  *
  * Each active loop pushes an entry with its label and the LLVM basic blocks
  * for CONTINUE (loop back) and EXIT (break out).  EXIT/CONTINUE statements
@@ -113,22 +128,20 @@ typedef struct UPL_loop_info
 {
 	const char		   *label;
 	bool				is_loop;
-	LLVMBasicBlockRef	continue_bb;
-	LLVMBasicBlockRef	exit_bb;
+	llvm::BasicBlock   *continue_bb;
+	llvm::BasicBlock   *exit_bb;
 
 	/*
-	 * ctx->cleanup_depth at the time this entry was pushed.  An EXIT/CONTINUE
-	 * targeting this entry from inside a more deeply nested exception block
-	 * or row loop must unwind every cleanup above this depth before it
-	 * branches; see upl_emit_loop_exit().
+	 * ctx->cleanup_stack depth at the time this entry was pushed.  An
+	 * EXIT/CONTINUE targeting this entry from inside a more deeply nested
+	 * exception block or row loop must unwind every cleanup above this
+	 * depth before it branches; see upl_emit_loop_exit().
 	 */
 	int					cleanup_depth;
-
-	struct UPL_loop_info *next;
 } UPL_loop_info;
 
 /*
- * Cleanup tracking for EXIT/CONTINUE — singly-linked stack.
+ * Cleanup tracking for EXIT/CONTINUE — a stack (ctx->cleanup_stack).
  *
  * Some constructs hold a runtime resource that their own exit paths release:
  * a block with exception handlers holds a frame (subtransaction, saved
@@ -153,9 +166,8 @@ typedef struct UPL_loop_info
 typedef struct UPL_cleanup_info
 {
 	int					unwind_rt_fn;	/* rt_funcs[] index of release helper */
-	LLVMValueRef		args[UPL_CLEANUP_MAX_ARGS];	/* operands after estate */
+	llvm::Value		   *args[UPL_CLEANUP_MAX_ARGS]; /* operands after estate */
 	int					nargs;			/* used entries in args[] */
-	struct UPL_cleanup_info *next;
 } UPL_cleanup_info;
 
 /* Forward declaration for callbacks that reference the context */
@@ -187,7 +199,7 @@ typedef struct UPL_callbacks
 	 * Returns false -> core emits RT call via rt_eval_bool index.
 	 */
 	bool (*try_compile_bool)(UPL_compile_ctx *ctx, void *expr,
-							 LLVMValueRef *result_out);
+							 llvm::Value **result_out);
 
 	/*
 	 * Assign an expression result to a variable.
@@ -199,22 +211,22 @@ typedef struct UPL_callbacks
 	 * Load a parameter's Datum value.  Handles all datum types
 	 * (plain var, recfield, promise, etc.) — language specific.
 	 */
-	LLVMValueRef (*load_param_datum)(UPL_compile_ctx *ctx,
-									 LLVMValueRef estate_ref, int dno);
+	llvm::Value *(*load_param_datum)(UPL_compile_ctx *ctx,
+									 llvm::Value *estate_ref, int dno);
 
 	/*
 	 * Load a parameter's isnull flag.  Language specific.
 	 */
-	LLVMValueRef (*load_param_isnull)(UPL_compile_ctx *ctx,
-									  LLVMValueRef estate_ref, int dno);
+	llvm::Value *(*load_param_isnull)(UPL_compile_ctx *ctx,
+									  llvm::Value *estate_ref, int dno);
 
 	/*
 	 * Store a Datum into a plain variable.
 	 * Sets value, clears isnull and freeval.
 	 */
 	void (*store_var_datum)(UPL_compile_ctx *ctx,
-							LLVMValueRef estate_ref, int dno,
-							LLVMValueRef datum_val);
+							llvm::Value *estate_ref, int dno,
+							llvm::Value *datum_val);
 
 	/*
 	 * Parser state management for compile-time SPI_prepare.
@@ -289,65 +301,59 @@ typedef struct UPL_expr_ops
  * Per-compilation state — created on stack in the driver's compile_function(),
  * threaded through all compilation functions.
  *
- * Contains the LLVM context/module/builder, the function being compiled,
- * pre-registered type references, loop tracking stack, driver callbacks,
- * datum offsets, expression ops, and exception handling state.
- *
- * The rt_funcs/rt_fntypes arrays are sized by the driver's max RT func
- * count.  The driver is responsible for allocating these arrays with the
- * right size and filling them in.  The core engine indexes into these
- * via the rt_* indices in UPL_callbacks.
+ * Owns the LLVM context/module/builder for one compilation.  Also carries
+ * the function being compiled, pre-registered type references, loop
+ * tracking stacks, driver callbacks, datum offsets, expression ops, and
+ * exception handling state.
  *
  * lang_data is an opaque pointer for driver-specific per-compilation state.
  *
- * Lifetime: exists only during a single call to driver's compile_function().
- * The LLVM context and module are handed off to OrcJIT at the end.
+ * Lifetime: exists only during a single call to the driver's
+ * compile_function().  The LLVM context and module are moved into OrcJIT
+ * at the end (upl_jit_compile); everything else unwinds with the object.
  */
 struct UPL_compile_ctx
 {
-	/* LLVM objects */
-	LLVMContextRef		context;
-	LLVMModuleRef		module;
-	LLVMBuilderRef		builder;
+	/* LLVM objects — owned by this compilation until handed to OrcJIT */
+	std::unique_ptr<llvm::LLVMContext> context;
+	std::unique_ptr<llvm::Module> module;
+	std::unique_ptr<llvm::IRBuilder<>> builder;
 
 	/* The LLVM function being compiled */
-	LLVMValueRef		function;
-	LLVMBasicBlockRef	entry_bb;
-	LLVMBasicBlockRef	return_bb;
+	llvm::Function	   *function = nullptr;
+	llvm::BasicBlock   *entry_bb = nullptr;
+	llvm::BasicBlock   *return_bb = nullptr;
 
 	/* Estate parameter (first function arg, loaded once) */
-	LLVMValueRef		estate_ref;
+	llvm::Value		   *estate_ref = nullptr;
 
 	/* Return code alloca */
-	LLVMValueRef		rc_ptr;
+	llvm::Value		   *rc_ptr = nullptr;
 
-	/* Loop label tracking for EXIT/CONTINUE */
-	UPL_loop_info	   *loop_stack;
+	/* Loop label tracking for EXIT/CONTINUE (innermost = back) */
+	std::vector<UPL_loop_info> loop_stack;
 
 	/* Enclosing cleanups an EXIT/CONTINUE may have to unwind */
-	UPL_cleanup_info   *cleanup_stack;
-	int					cleanup_depth;
+	std::vector<UPL_cleanup_info> cleanup_stack;
 
 	/* Pre-registered LLVM types */
-	LLVMTypeRef			types[UPL_NUM_TYPES];
+	std::array<llvm::Type *, UPL_NUM_TYPES> types = {};
 
 	/*
 	 * Pre-declared runtime function refs and types.
 	 *
-	 * These are allocated and sized by the driver (driver knows how many
-	 * runtime functions it has).  Core indexes into these via the rt_*
-	 * indices in the callbacks struct.
+	 * Sized by the driver (it knows how many runtime functions it has).
+	 * Core indexes into these via the rt_* indices in the callbacks struct.
 	 */
-	int					num_rt_funcs;	/* driver sets this */
-	LLVMValueRef	   *rt_funcs;		/* driver allocates [num_rt_funcs] */
-	LLVMTypeRef		   *rt_fntypes;		/* driver allocates [num_rt_funcs] */
+	std::vector<llvm::Function *> rt_funcs;
+	std::vector<llvm::FunctionType *> rt_fntypes;
 
 	/* sigsetjmp declaration for exception handling */
-	LLVMValueRef		sigsetjmp_fn;
-	LLVMTypeRef			sigsetjmp_fntype;
+	llvm::Function	   *sigsetjmp_fn = nullptr;
+	llvm::FunctionType *sigsetjmp_fntype = nullptr;
 
 	/* Set to true when the function contains exception blocks */
-	bool				has_exceptions;
+	bool				has_exceptions = false;
 
 	/*
 	 * Set while emitting a condition whose operand types are not yet settled,
@@ -359,19 +365,19 @@ struct UPL_compile_ctx
 	 * plan prepared now would bind the parameter as the placeholder type and
 	 * stay wrong for the life of the compiled function.
 	 */
-	bool				defer_cond_plan;
+	bool				defer_cond_plan = false;
 
 	/* Driver callbacks for body/expression compilation */
-	UPL_callbacks		callbacks;
+	UPL_callbacks		callbacks = {};
 
 	/* Struct offsets for parameterized GEP datum access */
-	UPL_datum_offsets	datum_offsets;
+	UPL_datum_offsets	datum_offsets = {};
 
 	/* Expression wrapper ops (set by driver, used by core expr compiler) */
-	UPL_expr_ops	   *expr_ops;
+	UPL_expr_ops	   *expr_ops = nullptr;
 
 	/* Opaque pointer for driver-specific per-compilation data */
-	void			   *lang_data;
+	void			   *lang_data = nullptr;
 };
 
 /*
@@ -430,20 +436,17 @@ typedef struct UPL_compile_hooks
 	bool dump_ir;
 } UPL_compile_hooks;
 
-/* --- core/upl_llvm.c --- */
+/* --- core/upl_llvm.cpp --- */
 extern void upl_llvm_init(void);
 extern void upl_llvm_shutdown(void);
-extern LLVMOrcLLJITRef upl_get_jit(void);
 extern void upl_register_types(UPL_compile_ctx *ctx);
-extern void upl_verify_module(LLVMModuleRef module);
-extern void upl_optimize_module(LLVMModuleRef module, int level);
-extern void *upl_jit_compile(LLVMModuleRef module,
-							 LLVMContextRef context,
+extern void upl_verify_module(llvm::Module &module);
+extern void upl_optimize_module(llvm::Module &module, int level);
+extern void *upl_jit_compile(std::unique_ptr<llvm::Module> module,
+							 std::unique_ptr<llvm::LLVMContext> context,
 							 const char *func_name);
 
-/* The compiled-function cache lives in upl_cache.hpp (namespace upl). */
-
-/* --- core/upl_compile.c --- */
+/* --- core/upl_compile.cpp --- */
 
 /* Compilation pipeline — driver calls this */
 extern void *upl_compile_function(UPL_compile_ctx *ctx,
@@ -451,16 +454,16 @@ extern void *upl_compile_function(UPL_compile_ctx *ctx,
 
 /* Loop stack management */
 extern void upl_push_loop(UPL_compile_ctx *ctx, const char *label,
-						   LLVMBasicBlockRef continue_bb,
-						   LLVMBasicBlockRef exit_bb);
+						  llvm::BasicBlock *continue_bb,
+						  llvm::BasicBlock *exit_bb);
 extern void upl_push_block_label(UPL_compile_ctx *ctx, const char *label,
-								 LLVMBasicBlockRef exit_bb);
+								 llvm::BasicBlock *exit_bb);
 extern void upl_pop_loop(UPL_compile_ctx *ctx);
 extern UPL_loop_info *upl_find_loop(UPL_compile_ctx *ctx, const char *label);
 
 /* Cleanup stack management (for EXIT/CONTINUE unwinding) */
 extern void upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
-							 LLVMValueRef *args, int nargs);
+							 llvm::Value **args, int nargs);
 extern void upl_pop_cleanup(UPL_compile_ctx *ctx);
 
 /*
@@ -472,107 +475,106 @@ extern void upl_pop_cleanup(UPL_compile_ctx *ctx);
 
 /* IF/ELSIF/ELSE */
 extern void upl_emit_if(UPL_compile_ctx *ctx,
-						 void *cond_expr,
-						 void *then_stmts,
-						 int num_elsifs,
-						 void **elsif_conds,
-						 void **elsif_bodies,
-						 void *else_stmts);
+						void *cond_expr,
+						void *then_stmts,
+						int num_elsifs,
+						void **elsif_conds,
+						void **elsif_bodies,
+						void *else_stmts);
 
 /* Conditional loop (WHILE = test_at_top, REPEAT UNTIL = test_at_bottom) */
 extern void upl_emit_cond_loop(UPL_compile_ctx *ctx, const char *label,
-								void *cond_expr, bool test_at_top,
-								void *body_stmts);
+							   void *cond_expr, bool test_at_top,
+							   void *body_stmts);
 
 /* Unconditional loop (LOOP ... END LOOP) */
 extern void upl_emit_loop(UPL_compile_ctx *ctx, const char *label,
-						   void *body_stmts);
+						  void *body_stmts);
 
 /* Integer FOR loop */
 extern void upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
-						   int var_dno, void *lower_expr, void *upper_expr,
-						   void *step_expr, bool reverse,
-						   void *body_stmts);
+						  int var_dno, void *lower_expr, void *upper_expr,
+						  void *step_expr, bool reverse,
+						  void *body_stmts);
 
 /* EXIT/CONTINUE/LEAVE/ITERATE */
 extern void upl_emit_loop_exit(UPL_compile_ctx *ctx, const char *label,
-								bool is_exit, void *cond_expr);
+							   bool is_exit, void *cond_expr);
 
 /* CASE (searched or simple) */
 extern void upl_emit_case(UPL_compile_ctx *ctx,
-						   bool has_test_expr, int test_varno,
-						   void *test_assign_expr,
-						   int num_whens,
-						   void **when_conds,
-						   void **when_bodies,
-						   bool has_else, void *else_body,
-						   int lineno);
+						  bool has_test_expr, int test_varno,
+						  void *test_assign_expr,
+						  int num_whens,
+						  void **when_conds,
+						  void **when_bodies,
+						  bool has_else, void *else_body,
+						  int lineno);
 
 /* Return — store rc, branch to return block, create dead block */
 extern void upl_emit_return(UPL_compile_ctx *ctx, int rt_exec_return,
-							 void *stmt);
+							void *stmt);
 
 /* Block with variable init + optional exception handling */
 extern void upl_emit_block(UPL_compile_ctx *ctx,
-							int n_initvars, int *initvarnos,
-							void *body_stmts,
-							bool has_exceptions, void *exception_data,
-							void (*compile_exceptions)(UPL_compile_ctx *ctx,
-													   void *exception_data));
+						   int n_initvars, int *initvarnos,
+						   void *body_stmts,
+						   bool has_exceptions, void *exception_data,
+						   void (*compile_exceptions)(UPL_compile_ctx *ctx,
+													  void *exception_data));
 
 /* Simple runtime call (thin wrapper for common pattern) */
-extern LLVMValueRef upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
-									   LLVMValueRef *args, unsigned count);
+extern llvm::Value *upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
+									 llvm::Value **args, unsigned count);
 
 /* Direct function pointer call (bypasses RT wrapper, embeds address) */
-extern LLVMValueRef upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
-										  LLVMTypeRef ret_type,
-										  LLVMValueRef *args, unsigned count);
+extern llvm::Value *upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
+										 llvm::Type *ret_type,
+										 llvm::Value **args, unsigned count);
 
-/* --- core/upl_datum.c --- */
+/* --- core/upl_datum.cpp --- */
 
 /* Parameterized datum access via GEP — uses ctx->datum_offsets */
-extern LLVMValueRef upl_emit_load_var_datum(UPL_compile_ctx *ctx,
-											 LLVMValueRef estate_ref, int dno);
+extern llvm::Value *upl_emit_load_var_datum(UPL_compile_ctx *ctx,
+											llvm::Value *estate_ref, int dno);
 extern void upl_emit_store_var_datum(UPL_compile_ctx *ctx,
-									  LLVMValueRef estate_ref, int dno,
-									  LLVMValueRef datum_val);
-extern LLVMValueRef upl_emit_load_var_isnull(UPL_compile_ctx *ctx,
-											  LLVMValueRef estate_ref, int dno);
+									 llvm::Value *estate_ref, int dno,
+									 llvm::Value *datum_val);
+extern llvm::Value *upl_emit_load_var_isnull(UPL_compile_ctx *ctx,
+											 llvm::Value *estate_ref, int dno);
 
 /*
  * Inline helpers for common LLVM operations.
  *
  * These are used extensively by driver code and are small enough to inline.
  */
-static inline LLVMValueRef
+static inline llvm::Value *
 upl_const_int32(UPL_compile_ctx *ctx, int32 val)
 {
-	return LLVMConstInt(ctx->types[UPL_INT32], val, false);
+	return llvm::ConstantInt::get(ctx->types[UPL_INT32],
+								  (uint64_t) (uint32) val, false);
 }
 
-static inline LLVMValueRef
+static inline llvm::Value *
 upl_const_int64(UPL_compile_ctx *ctx, int64 val)
 {
-	return LLVMConstInt(ctx->types[UPL_INT64], val, false);
+	return llvm::ConstantInt::get(ctx->types[UPL_INT64], (uint64_t) val,
+								  false);
 }
 
-static inline LLVMValueRef
+static inline llvm::Value *
 upl_const_ptr(UPL_compile_ctx *ctx, void *ptr)
 {
-	return LLVMConstIntToPtr(
-		LLVMConstInt(ctx->types[UPL_INT64], (uintptr_t) ptr, false),
+	/* A constant expression, not an instruction — usable at any point. */
+	return llvm::ConstantExpr::getIntToPtr(
+		llvm::ConstantInt::get(ctx->types[UPL_INT64], (uintptr_t) ptr, false),
 		ctx->types[UPL_PTR]);
 }
 
-static inline LLVMBasicBlockRef
+static inline llvm::BasicBlock *
 upl_append_block(UPL_compile_ctx *ctx, const char *name)
 {
-	return LLVMAppendBasicBlockInContext(ctx->context, ctx->function, name);
+	return llvm::BasicBlock::Create(*ctx->context, name, ctx->function);
 }
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif							/* UPL_H */

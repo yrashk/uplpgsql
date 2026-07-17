@@ -254,7 +254,7 @@ typedef struct UPLpgSQL_lang_data
 	UPLpgSQL_function   *uplpgsql_func;
 
 	/* Cached plstate pointer (estate->uplpgsql_estate), loaded at entry */
-	LLVMValueRef		plstate_ref;
+	llvm::Value *		plstate_ref;
 
 	/* Native local arrays identified by escape analysis (Phase 7) */
 	int					num_native_arrays;
@@ -280,30 +280,30 @@ typedef struct UPLpgSQL_native_array
 	int				dno;			/* datum number of the array variable */
 	Oid				elemtype;		/* INT4OID, INT8OID, or FLOAT8OID */
 	int				elem_size;		/* sizeof(element): 4 or 8 bytes */
-	LLVMTypeRef		llvm_elemtype;	/* i32, i64, or double */
-	LLVMValueRef	data_ptr;		/* entry-block alloca holding ptr to flat memory */
-	LLVMValueRef	len_ptr;		/* entry-block alloca: element count, or -1 when
+	llvm::Type *		llvm_elemtype;	/* i32, i64, or double */
+	llvm::Value *	data_ptr;		/* entry-block alloca holding ptr to flat memory */
+	llvm::Value *	len_ptr;		/* entry-block alloca: element count, or -1 when
 									 * the value is not a 1-D array and so cannot be
 									 * held natively (see uplpgsql_rt_native_array_
 									 * from_datum) */
-	LLVMValueRef	nulls_ptr;		/* entry-block alloca: ptr to a per-element
+	llvm::Value *	nulls_ptr;		/* entry-block alloca: ptr to a per-element
 									 * bool array, or NULL when no element is
 									 * NULL.  PostgreSQL fills the gap with NULLs
 									 * when an assignment extends an array past
 									 * its end, so the native form has to be able
 									 * to say which elements are null. */
-	LLVMValueRef	lb_ptr;			/* entry-block alloca: the array's lower bound.
+	llvm::Value *	lb_ptr;			/* entry-block alloca: the array's lower bound.
 									 * PostgreSQL arrays need not start at 1
 									 * ('[2:3]={9,10}'), so subscripts are relative
 									 * to this, not to 1. */
-	LLVMValueRef	cap_ptr;		/* entry-block alloca: allocated element slots
+	llvm::Value *	cap_ptr;		/* entry-block alloca: allocated element slots
 									 * in data.  An append (a write at exactly
 									 * lb+len) bumps len up to this without any
 									 * reallocation; past it the buffers grow
 									 * through uplpgsql_rt_native_array_reserve,
 									 * which doubles, so filling an array element
 									 * by element is amortized O(1) per write. */
-	LLVMValueRef	is_heap_ptr;	/* entry-block alloca (i8): 1 when data was
+	llvm::Value *	is_heap_ptr;	/* entry-block alloca (i8): 1 when data was
 									 * palloc'd and may be repalloc'd/pfree'd, 0
 									 * for the array_fill stack buffer, which can
 									 * only be copied out of. */
@@ -443,7 +443,7 @@ extern bool uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 										UPLpgSQL_stmt_assign *stmt);
 extern bool uplpgsql_try_compile_bool(UPLpgSQL_compile_ctx *ctx,
 									  UPLpgSQL_expr *expr,
-									  LLVMValueRef *result_out);
+									  llvm::Value * *result_out);
 
 /* Runtime helpers for pass-by-reference variable assignment */
 extern void uplpgsql_rt_assign_var_datum(UPLpgSQL_exec_state *estate,
