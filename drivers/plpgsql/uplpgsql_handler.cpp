@@ -1,13 +1,13 @@
 /*-------------------------------------------------------------------------
  *
- * uplpgsql_handler.c
+ * uplpgsql_handler.cpp
  *		PostgreSQL language handler entry points for uplpgsql.
  *
  *		This file is the main entry point for all uplpgsql execution.
  *		It contains:
  *
- *		_PG_init()              — Module initialization: sets up LLVM, cache,
- *		                          GUCs, and transaction callbacks.
+ *		_PG_init()              — Module initialization: sets up LLVM, GUCs,
+ *		                          and transaction callbacks.
  *
  *		uplpgsql_call_handler() — Main execution entry for functions and triggers.
  *		                          Compiles the function (get AST via forked parser),
@@ -20,10 +20,17 @@
  *		uplpgsql_validator()    — CREATE FUNCTION validation via test-compilation.
  *
  *		The call_handler implements the three-state cache flow:
- *		  1. Cache lookup: HIT → use JIT'd code, SKIP → use interpreter
- *		  2. Cache MISS → evaluate heuristic (uplpgsql_should_jit)
+ *		  1. Cache lookup: hit → use JIT'd code, skip → use interpreter
+ *		  2. Cache miss → evaluate heuristic (uplpgsql_should_jit)
  *		  3. If should JIT → compile, cache result; else cache skip marker
  *		  4. JIT compilation failures are caught and fall back to interpreter
+ *
+ *		Error handling here is a deliberate hybrid, per doc/cpp-rewrite.md:
+ *		sections that recover from errors themselves convert Postgres
+ *		longjmps into C++ exceptions with cppgres::ffi_guard so RAII cleanup
+ *		runs; the execution path stays Postgres-native (PG_TRY/PG_FINALLY)
+ *		so query errors keep full fidelity (SQLSTATE, detail, context) on
+ *		their way to the client.
  *
  *
  * Copyright (c) 2003-2014, Jonah H. Harris <jonah.harris@gmail.com>
@@ -47,9 +54,7 @@
  */
 #include "upl_common.h"
 
-#ifdef __cplusplus
 extern "C" {
-#endif
 
 #include "access/xact.h"
 #include "catalog/pg_proc.h"
@@ -66,32 +71,28 @@ extern "C" {
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
-#ifdef __cplusplus
 }
-#endif
+
+#include "cppgres.hpp"
+
+#include "upl_cache.hpp"
 
 /* Extension version, as reported by PG_MODULE_MAGIC_EXT and \dx */
 #define UPLPGSQL_VERSION	"1.0"
 
-#ifdef __cplusplus
 extern "C" {
-#endif
-
 PG_MODULE_MAGIC_EXT(
 					.name = "uplpgsql",
 					.version = UPLPGSQL_VERSION
 );
-
-#ifdef __cplusplus
 }
-#endif
 
 /*
  * Forked PL/pgSQL global variables (originally in pl_handler.c).
  *
  * These mirror the original PL/pgSQL GUCs but under the "uplpgsql." prefix.
- * They are referenced by the forked parser/executor code (upl_comp.c,
- * upl_exec.c, etc.) which was mechanically renamed from plpgsql_* to
+ * They are referenced by the forked parser/executor code (upl_comp.cpp,
+ * upl_exec.cpp, etc.) which was mechanically renamed from plpgsql_* to
  * uplpgsql_*.
  */
 static const struct config_enum_entry variable_conflict_options[] = {
@@ -131,29 +132,13 @@ static bool uplpgsql_extra_checks_check_hook(char **newvalue, void **extra,
 static void uplpgsql_extra_warnings_assign_hook(const char *newvalue, void *extra);
 static void uplpgsql_extra_errors_assign_hook(const char *newvalue, void *extra);
 
-/*
- * Cache staleness check callback for upl_cache_lookup().
- *
- * Returns true if the cached lang_func pointer matches the current one,
- * meaning the JIT'd code's embedded AST pointers are still valid.
- */
-static bool
-uplpgsql_cache_check(void *cached_lang_func, void *current_lang_func)
-{
-	return (cached_lang_func == current_lang_func);
-}
-
 /* Function declarations */
-#ifdef __cplusplus
 extern "C" {
-#endif
 PG_FUNCTION_INFO_V1(uplpgsql_call_handler);
 PG_FUNCTION_INFO_V1(uplpgsql_inline_handler);
 PG_FUNCTION_INFO_V1(uplpgsql_validator);
-#ifdef __cplusplus
 extern void _PG_init(void);
 }
-#endif
 
 /*
  * _PG_init - module load callback
@@ -168,9 +153,6 @@ _PG_init(void)
 
 	/* Initialize LLVM (core engine) */
 	upl_llvm_init();
-
-	/* Initialize function cache (core engine) */
-	upl_cache_init();
 
 	/*
 	 * Register forked PL/pgSQL GUCs under "uplpgsql." prefix
@@ -343,6 +325,175 @@ uplpgsql_extra_errors_assign_hook(const char *newvalue, void *extra)
 	uplpgsql_extra_errors = *((int *) extra);
 }
 
+namespace uplpgsql {
+
+/*
+ * Subtransaction guard for the JIT-compile fallback: rolls back unless
+ * commit() was called.
+ *
+ * cppgres::internal_subtransaction fixes its commit-or-rollback choice at
+ * construction, but the fallback needs rollback-on-exception with
+ * commit-on-success, so this guard makes the choice at scope exit.  It
+ * mirrors the memory context and resource owner restoration of the C
+ * version's BeginInternalSubTransaction / Release / RollbackAndRelease
+ * sequence.
+ */
+struct compile_subtransaction
+{
+	compile_subtransaction()
+		: oldcontext_(::CurrentMemoryContext),
+		  oldowner_(::CurrentResourceOwner)
+	{
+		cppgres::ffi_guard{::BeginInternalSubTransaction}(nullptr);
+		::CurrentMemoryContext = oldcontext_;
+	}
+
+	void
+	commit()
+	{
+		cppgres::ffi_guard{::ReleaseCurrentSubTransaction}();
+		restore();
+		committed_ = true;
+	}
+
+	~compile_subtransaction()
+	{
+		if (committed_)
+			return;
+
+		/*
+		 * Unwinding after a compilation error: the error state was already
+		 * captured and flushed by cppgres::pg_exception, so all that is left
+		 * is to roll the subtransaction back.  A destructor must not throw;
+		 * rollback failing is a can't-happen, but degrade to a warning
+		 * rather than std::terminate.
+		 */
+		try
+		{
+			::CurrentMemoryContext = oldcontext_;
+			cppgres::ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
+			restore();
+		}
+		catch (...)
+		{
+			elog(WARNING, "uplpgsql: rollback of JIT compile subtransaction failed");
+		}
+	}
+
+	compile_subtransaction(const compile_subtransaction &) = delete;
+	compile_subtransaction &operator=(const compile_subtransaction &) = delete;
+
+private:
+	void
+	restore()
+	{
+		::CurrentMemoryContext = oldcontext_;
+		::CurrentResourceOwner = oldowner_;
+	}
+
+	::MemoryContext oldcontext_;
+	::ResourceOwner oldowner_;
+	bool committed_ = false;
+};
+
+/*
+ * Resolve the JIT'd code for a compiled function: consult the cache, and on
+ * a miss either compile (inside a subtransaction, falling back to the
+ * interpreter on failure) or record the heuristic's decision to skip.
+ *
+ * Returns nullptr when the function should run under the interpreter.
+ */
+static UPLpgSQL_func *
+jit_lookup_or_compile(UPLpgSQL_function *func)
+{
+	auto [status, cached] = upl::cache().lookup(func->fn_oid,
+												func->cfunc.fn_xmin,
+												func->cfunc.fn_tid,
+												func);
+
+	switch (status)
+	{
+		case upl::cache_status::hit:
+			return (UPLpgSQL_func *) cached;
+
+		case upl::cache_status::skip:
+			return nullptr;
+
+		case upl::cache_status::miss:
+			break;
+	}
+
+	/*
+	 * First call for this function version.  By default we JIT everything.
+	 * When uplpgsql.enable_jit_heuristic is on, run the cost/benefit scorer
+	 * to decide.
+	 */
+	if (uplpgsql_enable_jit_heuristic && !uplpgsql_should_jit(func))
+	{
+		/* Heuristic says skip — cache that decision */
+		upl::cache().store_skip(func->fn_oid,
+								func->cfunc.fn_xmin,
+								func->cfunc.fn_tid,
+								func);
+		if (uplpgsql_log_compilation)
+			elog(LOG, "uplpgsql: skipping JIT for %s (heuristic)",
+				 func->fn_signature);
+		return nullptr;
+	}
+
+	/*
+	 * Compile inside an internal subtransaction.
+	 *
+	 * Compilation can raise a Postgres error — an unsupported construct, an
+	 * expression whose plan will not prepare, an LLVM verification failure —
+	 * and we intend to catch that and fall back to the interpreter.
+	 * Catching an arbitrary error and carrying on is only safe when a
+	 * subtransaction restores the memory context, resource owner, buffer
+	 * pins and syscache references; otherwise the "graceful fallback" leaks
+	 * whatever the failed compile was holding.  That is not hypothetical: a
+	 * simple CASE over a non-integer value fails to plan at compile time and
+	 * leaked syscache references on every such function.
+	 *
+	 * cppgres::ffi_guard turns the error's longjmp into a pg_exception
+	 * (capturing and flushing the error state), the subtransaction guard
+	 * rolls back during unwind, and the catch block logs the cause.  We must
+	 * NOT report the error to the client: compilation failing is not a query
+	 * failure — execution continues under the interpreter — so it goes to
+	 * the server log instead, folded into the fallback notice: at LOG when
+	 * uplpgsql.log_compilation is on, at DEBUG1 otherwise.
+	 */
+	try
+	{
+		compile_subtransaction subtx;
+		UPLpgSQL_func *jitfunc;
+
+		jitfunc = cppgres::ffi_guard{uplpgsql_compile_function}(func);
+		upl::cache().store(func->fn_oid,
+						   func->cfunc.fn_xmin,
+						   func->cfunc.fn_tid,
+						   func,
+						   (UPL_func *) jitfunc);
+
+		subtx.commit();
+
+		if (uplpgsql_log_compilation)
+			elog(LOG, "uplpgsql: JIT compiled function %s (oid %u)",
+				 func->fn_signature, func->fn_oid);
+
+		return jitfunc;
+	}
+	catch (const cppgres::pg_exception &e)
+	{
+		elog(uplpgsql_log_compilation ? LOG : DEBUG1,
+			 "uplpgsql: JIT compilation failed for %s (%s), "
+			 "using interpreter",
+			 func->fn_signature, e.message());
+		return nullptr;
+	}
+}
+
+} // namespace uplpgsql
+
 /*
  * uplpgsql_call_handler - main entry point for function/trigger execution
  *
@@ -378,8 +529,7 @@ uplpgsql_call_handler(PG_FUNCTION_ARGS)
 
 	/*
 	 * Compile the function (get AST via our forked parser).
-	 */
-	/*
+	 *
 	 * forValidator is false here: we are executing, not validating.  It must
 	 * not be confused with the trigger flags — those reach do_compile()
 	 * through fcinfo's context, which is already set up by the caller.
@@ -411,124 +561,13 @@ uplpgsql_call_handler(PG_FUNCTION_ARGS)
 	 * For regular functions and triggers, try the JIT path.
 	 * Event triggers still use the interpreter.
 	 */
-	jitfunc = NULL;
-	if (!isEventTrigger)
-	{
-		int			cache_status;
-		UPL_func   *upl_jitfunc;
+	jitfunc = isEventTrigger ? nullptr : uplpgsql::jit_lookup_or_compile(func);
 
-		cache_status = upl_cache_lookup(func->fn_oid,
-										func->cfunc.fn_xmin,
-										func->cfunc.fn_tid,
-										func,
-										uplpgsql_cache_check,
-										&upl_jitfunc);
-
-		if (cache_status == UPL_CACHE_MISS)
-		{
-			/*
-			 * First call for this function version.  By default we JIT
-			 * everything.  When uplpgsql.enable_jit_heuristic is on, run
-			 * the cost/benefit scorer to decide.
-			 */
-			if (!uplpgsql_enable_jit_heuristic || uplpgsql_should_jit(func))
-			{
-				MemoryContext	oldcontext = CurrentMemoryContext;
-				ResourceOwner	oldowner = CurrentResourceOwner;
-
-				/*
-				 * Compile inside an internal subtransaction.
-				 *
-				 * Compilation can elog(ERROR) — an unsupported construct, an
-				 * expression whose plan will not prepare, an LLVM verification
-				 * failure — and we intend to catch that and fall back to the
-				 * interpreter.  Catching an arbitrary error and carrying on is
-				 * only safe when a subtransaction restores the memory context,
-				 * resource owner, buffer pins and syscache references;
-				 * otherwise the "graceful fallback" leaks whatever the failed
-				 * compile was holding.  That is not hypothetical: a simple
-				 * CASE over a non-integer value fails to plan at compile time
-				 * and leaked syscache references on every such function.
-				 */
-				BeginInternalSubTransaction(NULL);
-				MemoryContextSwitchTo(oldcontext);
-
-				PG_TRY();
-				{
-					jitfunc = uplpgsql_compile_function(func);
-					upl_cache_store(func->fn_oid,
-									func->cfunc.fn_xmin,
-									func->cfunc.fn_tid,
-									func,
-									(UPL_func *) jitfunc);
-
-					/* Success — commit the subtransaction. */
-					ReleaseCurrentSubTransaction();
-					MemoryContextSwitchTo(oldcontext);
-					CurrentResourceOwner = oldowner;
-
-					if (uplpgsql_log_compilation)
-						elog(LOG, "uplpgsql: JIT compiled function %s (oid %u)",
-							 func->fn_signature, func->fn_oid);
-				}
-				PG_CATCH();
-				{
-					ErrorData  *edata;
-
-					/*
-					 * Capture the compile error, then roll the subtransaction
-					 * back.  We must NOT EmitErrorReport() it: compilation
-					 * failing is not a query failure — execution continues
-					 * under the interpreter — so sending it to the client at
-					 * ERROR severity produces a spurious error alongside the
-					 * real result (and confuses the wire protocol).  Re-emit
-					 * the cause on the server log instead, folded into the
-					 * fallback notice: at LOG when uplpgsql.log_compilation is
-					 * on, at DEBUG1 otherwise.
-					 *
-					 * CopyErrorData() runs in oldcontext (which outlives the
-					 * subtransaction) before FlushErrorState clears the error.
-					 */
-					MemoryContextSwitchTo(oldcontext);
-					edata = CopyErrorData();
-					FlushErrorState();
-					RollbackAndReleaseCurrentSubTransaction();
-					MemoryContextSwitchTo(oldcontext);
-					CurrentResourceOwner = oldowner;
-
-					jitfunc = NULL;
-					elog(uplpgsql_log_compilation ? LOG : DEBUG1,
-						 "uplpgsql: JIT compilation failed for %s (%s), "
-						 "using interpreter",
-						 func->fn_signature, edata->message);
-					FreeErrorData(edata);
-				}
-				PG_END_TRY();
-			}
-			else
-			{
-				/* Heuristic says skip — cache that decision */
-				upl_cache_store_skip(func->fn_oid,
-									 func->cfunc.fn_xmin,
-									 func->cfunc.fn_tid,
-									 func);
-				jitfunc = NULL;
-				if (uplpgsql_log_compilation)
-					elog(LOG, "uplpgsql: skipping JIT for %s (heuristic)",
-						 func->fn_signature);
-			}
-		}
-		else if (cache_status == UPL_CACHE_SKIP)
-		{
-			jitfunc = NULL;
-		}
-		else
-		{
-			/* UPL_CACHE_HIT: cast back to PL/pgSQL-specific type */
-			jitfunc = (UPLpgSQL_func *) upl_jitfunc;
-		}
-	}
-
+	/*
+	 * Execution is a Postgres-native error region: query errors longjmp to
+	 * the caller with full fidelity, and PG_FINALLY (not RAII — destructors
+	 * do not run on longjmp) releases what this frame holds.
+	 */
 	PG_TRY();
 	{
 		if (isTrigger)
@@ -650,7 +689,10 @@ uplpgsql_inline_handler(PG_FUNCTION_ARGS)
 	simple_eval_resowner =
 		ResourceOwnerCreate(NULL, "UPL/pgSQL DO block simple expressions");
 
-	/* Execute the DO block via the interpreter (not JIT'd) */
+	/*
+	 * Postgres-native error region (see call_handler): cleanup on failure
+	 * must run under PG_CATCH because a query error longjmps past any RAII.
+	 */
 	PG_TRY();
 	{
 		retval = uplpgsql_exec_function(func, fake_fcinfo,
@@ -698,33 +740,32 @@ uplpgsql_inline_handler(PG_FUNCTION_ARGS)
  * uplpgsql_validator - CREATE FUNCTION validation
  *
  * Validates by test-compiling the function with PL/pgSQL's parser.
- * Mirrors uplpgsql_validator() logic since that function is not callable
- * as a C function from extensions.
  */
 Datum
 uplpgsql_validator(PG_FUNCTION_ARGS)
 {
 	Oid			funcoid = PG_GETARG_OID(0);
-	HeapTuple	tuple;
-	Form_pg_proc proc;
 	bool		is_trigger = false;
 	bool		is_event_trigger = false;
 
 	if (!CheckFunctionValidatorAccess(fcinfo->flinfo->fn_oid, funcoid))
 		PG_RETURN_VOID();
 
-	/* Get the function's pg_proc entry */
-	tuple = SearchSysCache1(PROCOID, ObjectIdGetDatum(funcoid));
-	if (!HeapTupleIsValid(tuple))
-		elog(ERROR, "cache lookup failed for function %u", funcoid);
-	proc = (Form_pg_proc) GETSTRUCT(tuple);
+	/* Get the function's return type from its pg_proc entry */
+	{
+		Oid			prorettype;
 
-	if (proc->prorettype == TRIGGEROID)
-		is_trigger = true;
-	else if (proc->prorettype == EVENT_TRIGGEROID)
-		is_event_trigger = true;
+		prorettype = cppgres::exception_guard{[&] {
+			cppgres::syscache<Form_pg_proc, cppgres::oid> proc(funcoid);
 
-	ReleaseSysCache(tuple);
+			return (*proc).prorettype;
+		}}();
+
+		if (prorettype == TRIGGEROID)
+			is_trigger = true;
+		else if (prorettype == EVENT_TRIGGEROID)
+			is_event_trigger = true;
+	}
 
 	/* Postpone body checks if !check_function_bodies */
 	if (check_function_bodies)

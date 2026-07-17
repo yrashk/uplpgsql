@@ -40,7 +40,8 @@ UPL_LLVM_LDFLAGS := $(shell $(UPL_LLVM_CONFIG) --ldflags)
 UPL_LLVM_LIBS := $(shell $(UPL_LLVM_CONFIG) --libs core analysis orcjit native)
 UPL_LLVM_SYSLIBS := $(shell $(UPL_LLVM_CONFIG) --system-libs)
 
-PG_CPPFLAGS += $(UPL_LLVM_CFLAGS) -I$(CORE_DIR) -I$(COMMON_DIR)
+# -I../..: the amalgamated cppgres.hpp at the repository root
+PG_CPPFLAGS += $(UPL_LLVM_CFLAGS) -I$(CORE_DIR) -I$(COMMON_DIR) -I$(CORE_DIR)/..
 # -MMD -MP: record each object's real header dependencies (see the -include
 # below).  PGXS only tracks them if PostgreSQL itself was configured with
 # --enable-depend, which is not something an extension can rely on.

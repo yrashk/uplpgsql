@@ -1,33 +1,7 @@
 /*-------------------------------------------------------------------------
  *
- * upl_cache.c
- *		Compiled function cache — hash table keyed by function OID.
- *
- *		This cache is language-agnostic.  It stores compiled function
- *		pointers with invalidation based on fn_xmin/fn_tid (pg_proc row
- *		version) and a driver-supplied staleness check callback.
- *
- *		Three cache states per entry:
- *		  - Not present (MISS): function not yet seen → evaluate heuristic,
- *		    then either compile and store, or store skip marker
- *		  - jit_func == skip sentinel (SKIP): heuristic decided JIT
- *		    wouldn't help → use interpreter on all future calls
- *		  - jit_func points to a real UPL_func (HIT): use JIT'd code
- *
- *		Cache invalidation:
- *		  Each entry stores fn_xmin/fn_tid from the pg_proc row at the
- *		  time of compilation, plus an opaque lang_func pointer.  On
- *		  lookup, fn_xmin/fn_tid are compared against the current values.
- *		  The driver-supplied check_fn callback compares lang_func pointers
- *		  to detect when the language compiler recreated its function struct.
- *
- *		Memory management:
- *		  The hash table lives in TopMemoryContext and persists for the
- *		  lifetime of the backend.  UPL_func entries are also in
- *		  TopMemoryContext.  Old JIT'd code is intentionally leaked when
- *		  cache entries are invalidated (LLJIT doesn't support cheap
- *		  per-function removal).
- *
+ * upl_cache.cpp
+ *		Compiled function cache — see upl_cache.hpp for the contract.
  *
  * Copyright (c) 2003-2014, Jonah H. Harris <jonah.harris@gmail.com>
  * Copyright (c) 2014-2026, NEXTGRES, LLC. <oss@nextgres.com>
@@ -48,163 +22,76 @@
  * SPDX-License-Identifier: Apache-2.0
  *-------------------------------------------------------------------------
  */
-#include "upl.h"
+#include "upl_cache.hpp"
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-#include "utils/hsearch.h"
-#include "utils/memutils.h"
-#ifdef __cplusplus
-}
-#endif
+namespace upl {
 
-/*
- * Sentinel value stored in jit_func to indicate the heuristic decided
- * not to JIT this function.  Must be distinguishable from NULL (not cached)
- * and from any valid pointer.
- */
-static UPL_func upl_skip_jit_sentinel;
-
-#define UPL_SKIP_JIT (&upl_skip_jit_sentinel)
-
-typedef struct UPL_cache_entry
+function_cache &
+cache()
 {
-	Oid				fn_oid;			/* hash key */
-	UPL_func	   *jit_func;		/* NULL = not yet decided, SKIP, or real */
-	TransactionId	fn_xmin;		/* pg_proc row version for invalidation */
-	ItemPointerData	fn_tid;
-	void		   *lang_func;		/* opaque language-specific function struct */
-} UPL_cache_entry;
+	/*
+	 * Heap-allocated per backend, alive for the backend's lifetime — the
+	 * C++ analogue of the old TopMemoryContext hash table.
+	 */
+	static function_cache instance;
 
-static HTAB *upl_cache_htab = NULL;
-
-/*
- * upl_cache_init - Initialize the function cache hash table.
- */
-void
-upl_cache_init(void)
-{
-	HASHCTL		ctl;
-
-	memset(&ctl, 0, sizeof(ctl));
-	ctl.keysize = sizeof(Oid);
-	ctl.entrysize = sizeof(UPL_cache_entry);
-	ctl.hcxt = TopMemoryContext;
-
-	upl_cache_htab = hash_create("upl function cache",
-								 32,
-								 &ctl,
-								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	return instance;
 }
 
-/*
- * upl_cache_lookup - Look up a compiled function in the cache.
- *
- * Parameters:
- *   fn_oid, fn_xmin, fn_tid: current function identity from pg_proc
- *   current_lang_func: current language-specific function struct pointer
- *   check_fn: callback to compare cached vs current lang_func (may be NULL
- *             if no lang_func staleness check is needed)
- *   jitfunc_out: set to the cached compiled function on HIT
- *
- * Returns:
- *   UPL_CACHE_MISS   - not in cache, caller should evaluate heuristic
- *   UPL_CACHE_SKIP   - heuristic said skip JIT, use interpreter
- *   UPL_CACHE_HIT    - *jitfunc_out set to compiled function
- */
-int
-upl_cache_lookup(Oid fn_oid, TransactionId fn_xmin, ItemPointerData fn_tid,
-				 void *current_lang_func, upl_cache_check_fn check_fn,
-				 UPL_func **jitfunc_out)
+function_cache::result
+function_cache::lookup(Oid fn_oid, TransactionId fn_xmin,
+					   ItemPointerData fn_tid, const void *current_lang_func)
 {
-	UPL_cache_entry	   *entry;
-	bool				found;
+	auto it = entries_.find(fn_oid);
 
-	*jitfunc_out = NULL;
+	if (it == entries_.end())
+		return {};
 
-	if (upl_cache_htab == NULL)
-		return UPL_CACHE_MISS;
-
-	entry = (UPL_cache_entry *) hash_search(upl_cache_htab,
-											&fn_oid,
-											HASH_FIND,
-											&found);
-	if (!found)
-		return UPL_CACHE_MISS;
+	entry &e = it->second;
 
 	/*
-	 * Check if the function has been replaced (CREATE OR REPLACE).
-	 * The language compiler updates fn_xmin/fn_tid when it recompiles
-	 * the AST from a changed pg_proc row.
-	 *
-	 * Also check via the driver callback if the language compiler returned
-	 * a different function struct.  The JIT'd code has AST node pointers
-	 * embedded as LLVM constants from the original struct.  If the compiler
-	 * recreated the struct, those embedded pointers are dangling.
+	 * Invalidate when the function was replaced (CREATE OR REPLACE changes
+	 * fn_xmin/fn_tid) or when the language compiler recreated its function
+	 * struct: the JIT'd code has AST node pointers from the original struct
+	 * embedded as LLVM constants, and those would now dangle.
 	 */
-	if (entry->fn_xmin != fn_xmin ||
-		!ItemPointerEquals(&entry->fn_tid, &fn_tid) ||
-		(check_fn && !check_fn(entry->lang_func, current_lang_func)))
+	if (e.fn_xmin != fn_xmin ||
+		!ItemPointerEquals(&e.fn_tid, &fn_tid) ||
+		e.lang_func != current_lang_func)
 	{
 		elog(DEBUG1, "upl: invalidating cache for function %u "
 			 "(xmin %u -> %u, lang_func %p -> %p)",
 			 fn_oid,
-			 entry->fn_xmin, fn_xmin,
-			 entry->lang_func, current_lang_func);
+			 e.fn_xmin, fn_xmin,
+			 e.lang_func, current_lang_func);
 
 		/*
-		 * Remove the entry so the heuristic is re-evaluated.
-		 * Old JIT'd code (if any) is intentionally leaked.
+		 * Erase so the heuristic is re-evaluated.  Old JIT'd code (if any)
+		 * is intentionally leaked.
 		 */
-		hash_search(upl_cache_htab, &fn_oid, HASH_REMOVE, NULL);
-		return UPL_CACHE_MISS;
+		entries_.erase(it);
+		return {};
 	}
 
-	if (entry->jit_func == UPL_SKIP_JIT)
-		return UPL_CACHE_SKIP;
+	if (e.skip)
+		return {cache_status::skip, nullptr};
 
-	/*
-	 * Unreachable today — store always writes either a real pointer or the
-	 * SKIP sentinel — but a NULL here would otherwise be reported as a HIT and
-	 * the caller would jump through it.  Treat it as "not yet decided".
-	 */
-	if (entry->jit_func == NULL)
-		return UPL_CACHE_MISS;
-
-	*jitfunc_out = entry->jit_func;
-	return UPL_CACHE_HIT;
+	return {cache_status::hit, e.func};
 }
 
-/*
- * upl_cache_store - Store a compiled function in cache.
- */
 void
-upl_cache_store(Oid fn_oid, TransactionId fn_xmin, ItemPointerData fn_tid,
-				void *lang_func, UPL_func *jitfunc)
+function_cache::store(Oid fn_oid, TransactionId fn_xmin,
+					  ItemPointerData fn_tid, const void *lang_func,
+					  UPL_func *func)
 {
-	UPL_cache_entry	   *entry;
-	bool				found;
-
-	if (upl_cache_htab == NULL)
-		upl_cache_init();
-
-	entry = (UPL_cache_entry *) hash_search(upl_cache_htab,
-											&fn_oid,
-											HASH_ENTER,
-											&found);
-	entry->jit_func = jitfunc;
-	entry->fn_xmin = fn_xmin;
-	entry->fn_tid = fn_tid;
-	entry->lang_func = lang_func;
+	entries_[fn_oid] = {func, false, fn_xmin, fn_tid, lang_func};
 }
 
-/*
- * upl_cache_store_skip - Record that this function should not be JIT'd.
- */
 void
-upl_cache_store_skip(Oid fn_oid, TransactionId fn_xmin, ItemPointerData fn_tid,
-					 void *lang_func)
+function_cache::store_skip(Oid fn_oid, TransactionId fn_xmin,
+						   ItemPointerData fn_tid, const void *lang_func)
 {
-	upl_cache_store(fn_oid, fn_xmin, fn_tid, lang_func, UPL_SKIP_JIT);
+	entries_[fn_oid] = {nullptr, true, fn_xmin, fn_tid, lang_func};
 }
+
+} // namespace upl

@@ -430,13 +430,6 @@ typedef struct UPL_compile_hooks
 	bool dump_ir;
 } UPL_compile_hooks;
 
-/*
- * Cache return codes.
- */
-#define UPL_CACHE_MISS		0	/* not in cache */
-#define UPL_CACHE_HIT		1	/* JIT'd function found */
-#define UPL_CACHE_SKIP		2	/* heuristic said skip JIT */
-
 /* --- core/upl_llvm.c --- */
 extern void upl_llvm_init(void);
 extern void upl_llvm_shutdown(void);
@@ -448,33 +441,7 @@ extern void *upl_jit_compile(LLVMModuleRef module,
 							 LLVMContextRef context,
 							 const char *func_name);
 
-/* --- core/upl_cache.c --- */
-
-/*
- * Staleness check callback type.
- *
- * The cache stores an opaque lang_func pointer (the language-specific
- * function struct, e.g. UPLpgSQL_function *).  On lookup, the cache passes
- * the stored pointer back to this callback.  The driver returns true if
- * the stored pointer is still valid (same pointer as current), false if
- * the compiler returned a different struct and the JIT'd code's embedded
- * AST pointers are stale.
- */
-typedef bool (*upl_cache_check_fn)(void *cached_lang_func, void *current_lang_func);
-
-extern void upl_cache_init(void);
-extern int upl_cache_lookup(Oid fn_oid, TransactionId fn_xmin,
-							ItemPointerData fn_tid,
-							void *current_lang_func,
-							upl_cache_check_fn check_fn,
-							UPL_func **jitfunc_out);
-extern void upl_cache_store(Oid fn_oid, TransactionId fn_xmin,
-							ItemPointerData fn_tid,
-							void *lang_func,
-							UPL_func *jitfunc);
-extern void upl_cache_store_skip(Oid fn_oid, TransactionId fn_xmin,
-								 ItemPointerData fn_tid,
-								 void *lang_func);
+/* The compiled-function cache lives in upl_cache.hpp (namespace upl). */
 
 /* --- core/upl_compile.c --- */
 

@@ -99,13 +99,6 @@ extern "C" {
 #define UPLPGSQL_NUM_TYPES	UPL_NUM_TYPES
 
 /*
- * Backward compatibility aliases for cache constants.
- */
-#define UPLPGSQL_CACHE_MISS		UPL_CACHE_MISS
-#define UPLPGSQL_CACHE_HIT		UPL_CACHE_HIT
-#define UPLPGSQL_CACHE_SKIP		UPL_CACHE_SKIP
-
-/*
  * Runtime function indices — used to index into ctx->rt_funcs[] and
  * ctx->rt_fntypes[] for pre-declared runtime helper references.
  *
