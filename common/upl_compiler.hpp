@@ -160,8 +160,7 @@ private:
 	llvm::Value		   *plstate_ref_ = nullptr;
 
 	/* Native local arrays identified by escape analysis (Phase 7) */
-	int					num_native_arrays_ = 0;
-	UPLpgSQL_native_array *native_arrays_ = nullptr;
+	std::vector<UPLpgSQL_native_array> native_arrays_;
 
 	/*
 	 * Core callback trampolines (core takes C function pointers) — one per
@@ -193,11 +192,11 @@ private:
 
 	/* IR emission helpers over the runtime function table */
 	llvm::Value *call_fn(UPLpgSQL_rt_func which,
-						 llvm::Value **args, unsigned count);
+						 llvm::ArrayRef<llvm::Value *> args);
 	llvm::Value *call_exec_nosync(void *fn_addr, llvm::Type *ret_type,
-								  llvm::Value **args, unsigned count);
+								  llvm::ArrayRef<llvm::Value *> args);
 	llvm::Value *call_exec(void *fn_addr, llvm::Type *ret_type,
-						   llvm::Value **args, unsigned count);
+						   llvm::ArrayRef<llvm::Value *> args);
 
 	/* statement dispatch */
 	void		compile_stmts(List *stmts);
@@ -234,13 +233,14 @@ private:
 	void		compile_rollback(UPLpgSQL_stmt_rollback *stmt);
 
 	/* block variable initialization */
-	void		emit_init_vars(int n_initvars, int *initvarnos);
+	void		emit_init_vars(llvm::ArrayRef<int> initvarnos);
 
 	/* CASE test expression assignment (see cb_assign_expr) */
 	void		assign_expr(int varno, void *expr);
 
 	/* native local array analysis / marshalling */
 	void		analyze_native_arrays(UPLpgSQL_function *func);
+	/* returned pointers stay valid: never resized after analyze_native_arrays */
 	UPLpgSQL_native_array *find_native_array(int dno);
 	void		emit_sync_native_array(UPLpgSQL_native_array *na);
 	void		sync_native_arrays();

@@ -3032,7 +3032,7 @@ function_compiler::compile_expr_fmgr_full(Expr *expr,
 				llvm::Value *call_result;
 				llvm::FunctionType *fn_type;
 				int			argidx;
-				llvm::Value **arg_isnulls;
+				llvm::SmallVector<llvm::Value *, 8> arg_isnulls;
 
 				if (IsA(expr, OpExpr))
 				{
@@ -3196,7 +3196,7 @@ function_compiler::compile_expr_fmgr_full(Expr *expr,
 					persistent_finfo = (FmgrInfo *)
 						MemoryContextAllocZero(TopMemoryContext,
 											   sizeof(FmgrInfo));
-					memcpy(persistent_finfo, &finfo, sizeof(FmgrInfo));
+					*persistent_finfo = finfo;
 					persistent_finfo->fn_mcxt = TopMemoryContext;
 
 					off = llvm::ConstantInt::get(i64, OFF_FCI_FLINFO, false);
@@ -3236,8 +3236,6 @@ function_compiler::compile_expr_fmgr_full(Expr *expr,
 				}
 
 				/* Fill in argument values and isnull flags */
-				arg_isnulls = (llvm::Value **)
-					palloc(sizeof(llvm::Value *) * (nargs > 0 ? nargs : 1));
 				argidx = 0;
 				for (auto *arg_expr : cppgres::list<Expr *>(args))
 				{
@@ -3275,7 +3273,7 @@ function_compiler::compile_expr_fmgr_full(Expr *expr,
 					if (arg_datum == NULL || arg_isnull == NULL)
 						return NULL;
 
-					arg_isnulls[argidx] = arg_isnull;
+					arg_isnulls.push_back(arg_isnull);
 
 					/* args[argidx].value */
 					arg_off = OFF_FCI_ARGS + SIZE_NULLABLE_DATUM * argidx
@@ -4989,12 +4987,7 @@ function_compiler::try_compile_bool(UPLpgSQL_expr *expr_node,
 	 * Sync native arrays first, or a condition over one (IF array_length(x,1)
 	 * = 3) sees the stale Datum instead of the live flat memory.
 	 */
-	{
-		int		na_i;
-
-		for (na_i = 0; na_i < num_native_arrays_; na_i++)
-			emit_sync_native_array(&native_arrays_[na_i]);
-	}
+	sync_native_arrays();
 
 	return false;
 }

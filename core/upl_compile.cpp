@@ -195,16 +195,16 @@ upl_find_loop(UPL_compile_ctx *ctx, const char *label)
  */
 void
 upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
-				 llvm::Value **args, int nargs)
+				 llvm::ArrayRef<llvm::Value *> args)
 {
 	UPL_cleanup_info cleanup = {};
-	int			i;
+	size_t		i;
 
-	Assert(nargs >= 0 && nargs <= UPL_CLEANUP_MAX_ARGS);
+	Assert(args.size() <= UPL_CLEANUP_MAX_ARGS);
 
 	cleanup.unwind_rt_fn = unwind_rt_fn;
-	cleanup.nargs = nargs;
-	for (i = 0; i < nargs; i++)
+	cleanup.nargs = (int) args.size();
+	for (i = 0; i < args.size(); i++)
 		cleanup.args[i] = args[i];
 	ctx->cleanup_stack.push_back(cleanup);
 }
@@ -243,7 +243,9 @@ upl_emit_cleanup_unwind(UPL_compile_ctx *ctx, int target_depth)
 		for (i = 0; i < cleanup->nargs; i++)
 			args[1 + i] = cleanup->args[i];
 
-		upl_emit_rt_call(ctx, cleanup->unwind_rt_fn, args, 1 + cleanup->nargs);
+		upl_emit_rt_call(ctx, cleanup->unwind_rt_fn,
+						 llvm::ArrayRef<llvm::Value *>(args,
+													   1 + cleanup->nargs));
 	}
 }
 
@@ -260,14 +262,12 @@ upl_emit_cleanup_unwind(UPL_compile_ctx *ctx, int target_depth)
  */
 llvm::Value *
 upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
-				 llvm::Value **args, unsigned count)
+				 llvm::ArrayRef<llvm::Value *> args)
 {
 	Assert(rt_func_idx >= 0 &&
 		   (size_t) rt_func_idx < ctx->rt_funcs.size());
 
-	return ctx->builder->CreateCall(ctx->rt_funcs[rt_func_idx],
-									llvm::ArrayRef<llvm::Value *>(args, count),
-									"");
+	return ctx->builder->CreateCall(ctx->rt_funcs[rt_func_idx], args, "");
 }
 
 /*
@@ -282,22 +282,22 @@ upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
 llvm::Value *
 upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
 					 llvm::Type *ret_type,
-					 llvm::Value **args, unsigned count)
+					 llvm::ArrayRef<llvm::Value *> args)
 {
 	llvm::Type		   *param_types[8];
 	llvm::FunctionType *fn_type;
 	llvm::Value		   *fn_ptr;
-	unsigned			i;
+	size_t				i;
 	const char		   *call_name;
 
-	Assert(count <= 8);
+	Assert(args.size() <= 8);
 
-	for (i = 0; i < count; i++)
+	for (i = 0; i < args.size(); i++)
 		param_types[i] = args[i]->getType();
 
 	fn_type = llvm::FunctionType::get(ret_type,
 									  llvm::ArrayRef<llvm::Type *>(param_types,
-																   count),
+																   args.size()),
 									  false);
 	fn_ptr = upl_const_ptr(ctx, fn_addr);
 
@@ -305,8 +305,7 @@ upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
 	call_name = (ret_type == ctx->types[UPL_VOID]) ? "" : "ret";
 
 	return ctx->builder->CreateCall(llvm::FunctionCallee(fn_type, fn_ptr),
-									llvm::ArrayRef<llvm::Value *>(args, count),
-									call_name);
+									args, call_name);
 }
 
 
@@ -339,7 +338,7 @@ upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr)
 			upl_const_ptr(ctx, cond_expr)
 		};
 
-		return upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_bool, args, 2);
+		return upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_bool, args);
 	}
 }
 
@@ -354,25 +353,20 @@ upl_eval_bool(UPL_compile_ctx *ctx, void *cond_expr)
  *
  * cond_expr:     the IF condition (opaque)
  * then_stmts:    body for the IF branch
- * num_elsifs:    number of ELSIF clauses
- * elsif_conds:   array of ELSIF condition expressions
- * elsif_bodies:  array of ELSIF statement bodies
+ * elsifs:        ELSIF clauses (condition + body pairs)
  * else_stmts:    ELSE body (NULL if no ELSE)
  */
 void
 upl_emit_if(UPL_compile_ctx *ctx,
 			void *cond_expr,
 			void *then_stmts,
-			int num_elsifs,
-			void **elsif_conds,
-			void **elsif_bodies,
+			llvm::ArrayRef<UPL_branch> elsifs,
 			void *else_stmts)
 {
 	llvm::BasicBlock   *then_bb;
 	llvm::BasicBlock   *else_bb;
 	llvm::BasicBlock   *merge_bb;
 	llvm::Value		   *cond;
-	int					i;
 
 	merge_bb = upl_append_block(ctx, "if.merge");
 
@@ -392,13 +386,13 @@ upl_emit_if(UPL_compile_ctx *ctx,
 	/* Else/elsif chain */
 	ctx->builder->SetInsertPoint(else_bb);
 
-	for (i = 0; i < num_elsifs; i++)
+	for (const UPL_branch &elsif : elsifs)
 	{
 		llvm::BasicBlock   *elsif_then;
 		llvm::BasicBlock   *elsif_else;
 		llvm::Value		   *elsif_cond;
 
-		elsif_cond = upl_eval_bool(ctx, elsif_conds[i]);
+		elsif_cond = upl_eval_bool(ctx, elsif.cond);
 
 		elsif_then = upl_append_block(ctx, "elsif.then");
 		elsif_else = upl_append_block(ctx, "elsif.else");
@@ -406,7 +400,7 @@ upl_emit_if(UPL_compile_ctx *ctx,
 		ctx->builder->CreateCondBr(elsif_cond, elsif_then, elsif_else);
 
 		ctx->builder->SetInsertPoint(elsif_then);
-		ctx->callbacks.compile_stmts(ctx, elsif_bodies[i]);
+		ctx->callbacks.compile_stmts(ctx, elsif.body);
 		ctx->builder->CreateBr(merge_bb);
 
 		ctx->builder->SetInsertPoint(elsif_else);
@@ -550,7 +544,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 			ctx->estate_ref,
 			upl_const_ptr(ctx, lower_expr)
 		};
-		lower = upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_int, args, 2);
+		lower = upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_int, args);
 	}
 
 	/* Evaluate upper bound */
@@ -559,7 +553,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 			ctx->estate_ref,
 			upl_const_ptr(ctx, upper_expr)
 		};
-		upper = upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_int, args, 2);
+		upper = upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_int, args);
 	}
 
 	/* Evaluate step (default 1) */
@@ -569,7 +563,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 			ctx->estate_ref,
 			upl_const_ptr(ctx, step_expr)
 		};
-		step = upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_int, args, 2);
+		step = upl_emit_rt_call(ctx, ctx->callbacks.rt_eval_int, args);
 	}
 	else
 		step = upl_const_int32(ctx, 1);
@@ -636,7 +630,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 			upl_const_int32(ctx, var_dno),
 			cur_val
 		};
-		upl_emit_rt_call(ctx, ctx->callbacks.rt_assign_int, args, 3);
+		upl_emit_rt_call(ctx, ctx->callbacks.rt_assign_int, args);
 	}
 
 	/* Push loop: CONTINUE -> step_bb, EXIT -> exit_bb */
@@ -686,7 +680,7 @@ upl_emit_fori(UPL_compile_ctx *ctx, const char *label,
 			ctx->estate_ref,
 			found_val
 		};
-		upl_emit_rt_call(ctx, ctx->callbacks.rt_set_found, args, 2);
+		upl_emit_rt_call(ctx, ctx->callbacks.rt_set_found, args);
 	}
 }
 
@@ -795,9 +789,7 @@ upl_emit_loop_exit(UPL_compile_ctx *ctx, const char *label,
  * has_test_expr:     true for simple CASE (test expression assigned to temp var)
  * test_varno:        datum number of the temporary variable for simple CASE
  * test_assign_expr:  the test expression to assign (opaque)
- * num_whens:         number of WHEN clauses
- * when_conds:        array of WHEN condition expressions
- * when_bodies:       array of WHEN statement bodies
+ * whens:             WHEN clauses (condition + body pairs)
  * has_else:          true if there is an ELSE clause
  * else_body:         ELSE body statements (opaque)
  * lineno:            line number for error reporting (CASE without ELSE + no match)
@@ -806,14 +798,11 @@ void
 upl_emit_case(UPL_compile_ctx *ctx,
 			  bool has_test_expr, int test_varno,
 			  void *test_assign_expr,
-			  int num_whens,
-			  void **when_conds,
-			  void **when_bodies,
+			  llvm::ArrayRef<UPL_branch> whens,
 			  bool has_else, void *else_body,
 			  int lineno)
 {
 	llvm::BasicBlock   *merge_bb;
-	int					i;
 
 	merge_bb = upl_append_block(ctx, "case.merge");
 
@@ -825,7 +814,7 @@ upl_emit_case(UPL_compile_ctx *ctx,
 		ctx->callbacks.assign_expr(ctx, test_varno, test_assign_expr);
 
 	/* Evaluate each WHEN clause as a conditional branch chain */
-	for (i = 0; i < num_whens; i++)
+	for (const UPL_branch &when : whens)
 	{
 		llvm::BasicBlock   *when_then_bb;
 		llvm::BasicBlock   *when_else_bb;
@@ -838,7 +827,7 @@ upl_emit_case(UPL_compile_ctx *ctx,
 		 * statements and compile normally.
 		 */
 		ctx->defer_cond_plan = has_test_expr;
-		cond = upl_eval_bool(ctx, when_conds[i]);
+		cond = upl_eval_bool(ctx, when.cond);
 		ctx->defer_cond_plan = false;
 
 		when_then_bb = upl_append_block(ctx, "case.when.then");
@@ -856,10 +845,10 @@ upl_emit_case(UPL_compile_ctx *ctx,
 				ctx->estate_ref,
 				upl_const_int32(ctx, test_varno)
 			};
-			upl_emit_rt_call(ctx, ctx->callbacks.rt_assign_null, args, 2);
+			upl_emit_rt_call(ctx, ctx->callbacks.rt_assign_null, args);
 		}
 
-		ctx->callbacks.compile_stmts(ctx, when_bodies[i]);
+		ctx->callbacks.compile_stmts(ctx, when.body);
 		ctx->builder->CreateBr(merge_bb);
 
 		/* Continue to next WHEN */
@@ -873,7 +862,7 @@ upl_emit_case(UPL_compile_ctx *ctx,
 			ctx->estate_ref,
 			upl_const_int32(ctx, test_varno)
 		};
-		upl_emit_rt_call(ctx, ctx->callbacks.rt_assign_null, args, 2);
+		upl_emit_rt_call(ctx, ctx->callbacks.rt_assign_null, args);
 	}
 
 	/* ELSE clause or error */
@@ -888,7 +877,7 @@ upl_emit_case(UPL_compile_ctx *ctx,
 			ctx->estate_ref,
 			upl_const_int32(ctx, lineno)
 		};
-		upl_emit_rt_call(ctx, ctx->callbacks.rt_case_error, args, 2);
+		upl_emit_rt_call(ctx, ctx->callbacks.rt_case_error, args);
 	}
 
 	ctx->builder->CreateBr(merge_bb);
@@ -916,7 +905,7 @@ upl_emit_return(UPL_compile_ctx *ctx, int rt_exec_return, void *stmt)
 			upl_const_ptr(ctx, stmt)
 		};
 
-		rc = upl_emit_rt_call(ctx, rt_exec_return, args, 2);
+		rc = upl_emit_rt_call(ctx, rt_exec_return, args);
 	}
 
 	/* Store the return code */
@@ -965,14 +954,12 @@ upl_emit_return(UPL_compile_ctx *ctx, int rt_exec_return, void *stmt)
  */
 void
 upl_emit_block(UPL_compile_ctx *ctx,
-			   int n_initvars, int *initvarnos,
+			   llvm::ArrayRef<int> initvarnos,
 			   void *body_stmts,
 			   bool has_exceptions, void *exception_data,
 			   void (*compile_exceptions)(UPL_compile_ctx *ctx,
 										  void *exception_data))
 {
-	int i;
-
 	if (has_exceptions)
 	{
 		ctx->has_exceptions = true;
@@ -989,13 +976,13 @@ upl_emit_block(UPL_compile_ctx *ctx,
 	}
 
 	/* No exceptions: initialize variables and compile body */
-	for (i = 0; i < n_initvars; i++)
+	for (int initvarno : initvarnos)
 	{
 		llvm::Value *args[] = {
 			ctx->estate_ref,
-			upl_const_int32(ctx, initvarnos[i])
+			upl_const_int32(ctx, initvarno)
 		};
-		upl_emit_rt_call(ctx, ctx->callbacks.rt_init_var, args, 2);
+		upl_emit_rt_call(ctx, ctx->callbacks.rt_init_var, args);
 	}
 
 	/* Compile body statements */
@@ -1145,8 +1132,7 @@ upl_compile_function(UPL_compile_ctx *ctx, UPL_compile_hooks *hooks)
 		llvm::raw_string_ostream os(irstr);
 
 		ctx->module->print(os, nullptr);
-		elog(LOG, "upl: IR for %s:\n%s", func_name,
-			 pstrdup(os.str().c_str()));
+		elog(LOG, "upl: IR for %s:\n%s", func_name, os.str().c_str());
 	}
 
 	/* 15. Optimize */

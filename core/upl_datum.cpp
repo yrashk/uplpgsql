@@ -3,8 +3,8 @@
  * upl_datum.c
  *		Parameterized datum load/store operations via GEP.
  *
- *		Emits LLVM IR to access variable values (Datum), isnull flags,
- *		and freeval flags inside language-specific exec state structs.
+ *		Emits LLVM IR to access variable values (Datum) and isnull flags
+ *		inside language-specific exec state structs.
  *		All struct offsets are parameterized via ctx->datum_offsets, so
  *		this code works identically for PL/pgSQL, SQL/PSM, PL/SQL, and
  *		T-SQL — each driver just fills in its own offsetof() values.
@@ -14,9 +14,8 @@
  *		  estate_ref  →  [+estate_to_lang_state]  →  load ptr (lang_state)
  *		  lang_state  →  [+lang_state_to_datums]  →  load ptr (datums)
  *		  datums      →  [dno * sizeof(ptr)]      →  load ptr (datum)
- *		  datum       →  [+var_to_value]           →  load/store i64
- *		  datum       →  [+var_to_isnull]          →  load/store i8
- *		  datum       →  [+var_to_freeval]         →  store i8
+ *		  datum       →  [+var_to_value]           →  load i64
+ *		  datum       →  [+var_to_isnull]          →  load i8
  *
  *
  * Copyright (c) 2003-2014, Jonah H. Harris <jonah.harris@gmail.com>
@@ -44,7 +43,7 @@
 /*
  * Navigate the GEP chain from estate_ref down to the individual datum
  * pointer for variable number dno.  This is the common prefix shared by
- * all three public functions.
+ * both public functions.
  *
  * Returns the datum pointer (opaque ptr to the language's variable struct).
  */
@@ -61,8 +60,8 @@ emit_datum_ptr(UPL_compile_ctx *ctx, llvm::Value *estate_ref, int dno,
 	char				nbuf[64];
 
 	/*
-	 * prefix ("ld"/"st"/"in") distinguishes the load, store and init chains in
-	 * the emitted IR, which matters once uplpgsql.dump_ir is on — otherwise
+	 * prefix ("ld"/"in") distinguishes the value and isnull chains in the
+	 * emitted IR, which matters once uplpgsql.dump_ir is on — otherwise
 	 * every chain produces identically-named values.
 	 */
 #define UPL_DNAME(suffix) \
@@ -97,8 +96,9 @@ emit_datum_ptr(UPL_compile_ctx *ctx, llvm::Value *estate_ref, int dno,
  * parameterized GEP chain.
  *
  * This handles only DTYPE_VAR (plain scalar variables).  Language-specific
- * datum types (RECFIELD, PROMISE, etc.) must be handled by the driver's
- * load_param_datum callback before falling through to this function.
+ * datum types (RECFIELD, PROMISE, etc.) are handled by the driver — its
+ * emit_load_param_datum method deals with them before reaching this
+ * function.
  */
 llvm::Value *
 upl_emit_load_var_datum(UPL_compile_ctx *ctx,
@@ -119,47 +119,6 @@ upl_emit_load_var_datum(UPL_compile_ctx *ctx,
 }
 
 /*
- * upl_emit_store_var_datum
- *
- * Emit IR to store a Datum (i64) into a plain variable.
- * Also clears the isnull flag (set to 0) and the freeval flag (set to 0).
- *
- * This is the "assign a known non-null value" path.  If the caller needs
- * to set isnull=true, it should use the RT_ASSIGN_NULL runtime helper
- * instead (which also handles freeing the old value if freeval was set).
- */
-void
-upl_emit_store_var_datum(UPL_compile_ctx *ctx,
-						 llvm::Value *estate_ref, int dno,
-						 llvm::Value *datum_val)
-{
-	llvm::IRBuilder<>  *builder = ctx->builder.get();
-	UPL_datum_offsets  *offsets = &ctx->datum_offsets;
-	llvm::Type		   *i8 = ctx->types[UPL_INT8];
-	llvm::Type		   *i64 = ctx->types[UPL_INT64];
-	llvm::Value		   *datum, *off, *gep;
-	llvm::Value		   *zero_i8;
-
-	datum = emit_datum_ptr(ctx, estate_ref, dno, "st");
-	zero_i8 = llvm::ConstantInt::get(i8, 0, false);
-
-	/* datum->value = datum_val */
-	off = llvm::ConstantInt::get(i64, offsets->var_to_value, false);
-	gep = builder->CreateGEP(i8, datum, off, "st.value.ptr");
-	builder->CreateStore(datum_val, gep);
-
-	/* datum->isnull = false */
-	off = llvm::ConstantInt::get(i64, offsets->var_to_isnull, false);
-	gep = builder->CreateGEP(i8, datum, off, "st.isnull.ptr");
-	builder->CreateStore(zero_i8, gep);
-
-	/* datum->freeval = false */
-	off = llvm::ConstantInt::get(i64, offsets->var_to_freeval, false);
-	gep = builder->CreateGEP(i8, datum, off, "st.freeval.ptr");
-	builder->CreateStore(zero_i8, gep);
-}
-
-/*
  * upl_emit_load_var_isnull
  *
  * Emit IR to load a plain variable's isnull flag as an i1 (bool).
@@ -168,7 +127,8 @@ upl_emit_store_var_datum(UPL_compile_ctx *ctx,
  * we load it as i8 and truncate to i1 for use in LLVM branch conditions.
  *
  * Like load_var_datum, this handles only plain variables.  RECFIELD and
- * PROMISE types are handled by the driver's load_param_isnull callback.
+ * PROMISE types are handled by the driver's emit_load_param_isnull method
+ * before it reaches this function.
  */
 llvm::Value *
 upl_emit_load_var_isnull(UPL_compile_ctx *ctx,

@@ -19,7 +19,6 @@
  *		  - UPL_loop_info: loop tracking for EXIT/CONTINUE compilation
  *		  - UPL_callbacks: driver callbacks for body/expression compilation
  *		  - UPL_datum_offsets: parameterized struct offsets for GEP
- *		  - UPL_expr_ops: expression wrapper abstraction
  *		  - UPL_compile_hooks: compilation pipeline hooks
  *
  *		Key enums:
@@ -208,34 +207,6 @@ typedef struct UPL_callbacks
 	void (*assign_expr)(UPL_compile_ctx *ctx, int varno, void *expr);
 
 	/*
-	 * Load a parameter's Datum value.  Handles all datum types
-	 * (plain var, recfield, promise, etc.) — language specific.
-	 */
-	llvm::Value *(*load_param_datum)(UPL_compile_ctx *ctx,
-									 llvm::Value *estate_ref, int dno);
-
-	/*
-	 * Load a parameter's isnull flag.  Language specific.
-	 */
-	llvm::Value *(*load_param_isnull)(UPL_compile_ctx *ctx,
-									  llvm::Value *estate_ref, int dno);
-
-	/*
-	 * Store a Datum into a plain variable.
-	 * Sets value, clears isnull and freeval.
-	 */
-	void (*store_var_datum)(UPL_compile_ctx *ctx,
-							llvm::Value *estate_ref, int dno,
-							llvm::Value *datum_val);
-
-	/*
-	 * Parser state management for compile-time SPI_prepare.
-	 * setup returns opaque saved state; restore puts it back.
-	 */
-	void *(*setup_parser_state)(UPL_compile_ctx *ctx, void *expr);
-	void (*restore_parser_state)(UPL_compile_ctx *ctx, void *saved);
-
-	/*
 	 * Runtime function indices for core to use in fallback paths.
 	 * -1 = not available (core skips that optimization).
 	 */
@@ -246,9 +217,6 @@ typedef struct UPL_callbacks
 	int rt_case_error;			/* void fn(ptr estate, i32 lineno) */
 	int rt_assign_null;			/* void fn(ptr estate, i32 dno) */
 	int rt_init_var;			/* void fn(ptr estate, i32 dno) */
-	int rt_assign_expr;			/* void fn(ptr estate, i32 dno, ptr expr) */
-	int rt_assign_var_datum;	/* void fn(ptr estate, i32 dno, i64 val, i8 isnull) */
-	int rt_copy_assign_var_datum; /* void fn(ptr estate, i32 dno, i64 val, i8 isnull) */
 } UPL_callbacks;
 
 /*
@@ -258,7 +226,7 @@ typedef struct UPL_callbacks
  * this with offsetof() values so core can navigate the struct hierarchy
  * without knowing the language-specific types.
  *
- * GEP chain: estate_ref → lang_state → datums[dno] → var.{value,isnull,freeval}
+ * GEP chain: estate_ref → lang_state → datums[dno] → var.{value,isnull}
  */
 typedef struct UPL_datum_offsets
 {
@@ -268,34 +236,10 @@ typedef struct UPL_datum_offsets
 	/* language exec state → datums array pointer */
 	size_t lang_state_to_datums;
 
-	/* Variable (datum) → value, isnull, freeval fields */
+	/* Variable (datum) → value, isnull fields */
 	size_t var_to_value;
 	size_t var_to_isnull;
-	size_t var_to_freeval;
 } UPL_datum_offsets;
-
-/*
- * Expression wrapper abstraction.
- *
- * Each language wraps PG expressions in its own struct (e.g. UPLpgSQL_expr).
- * Core expression compiler uses these ops to access the wrapper's fields
- * without knowing the language-specific type.
- *
- * Types are void* to avoid pulling language-specific headers into core:
- *   - get_paramnos returns Bitmapset*
- *   - get_plan/set_plan use SPIPlanPtr
- *   - get_parse_mode returns RawParseMode (cast to int)
- *   - parser_setup is ParserSetupHook
- */
-typedef struct UPL_expr_ops
-{
-	const char *(*get_query)(void *expr);
-	void *(*get_paramnos)(void *expr);
-	void *(*get_plan)(void *expr);
-	void (*set_plan)(void *expr, void *plan);
-	int (*get_parse_mode)(void *expr);
-	void (*parser_setup)(void *pstate, void *arg);
-} UPL_expr_ops;
 
 /*
  * Per-compilation state — created on stack in the driver's compile_function(),
@@ -303,8 +247,8 @@ typedef struct UPL_expr_ops
  *
  * Owns the LLVM context/module/builder for one compilation.  Also carries
  * the function being compiled, pre-registered type references, loop
- * tracking stacks, driver callbacks, datum offsets, expression ops, and
- * exception handling state.
+ * tracking stacks, driver callbacks, datum offsets, and exception
+ * handling state.
  *
  * lang_data is an opaque pointer for driver-specific per-compilation state.
  *
@@ -372,9 +316,6 @@ struct UPL_compile_ctx
 
 	/* Struct offsets for parameterized GEP datum access */
 	UPL_datum_offsets	datum_offsets = {};
-
-	/* Expression wrapper ops (set by driver, used by core expr compiler) */
-	UPL_expr_ops	   *expr_ops = nullptr;
 
 	/* Opaque pointer for driver-specific per-compilation data */
 	void			   *lang_data = nullptr;
@@ -463,7 +404,7 @@ extern UPL_loop_info *upl_find_loop(UPL_compile_ctx *ctx, const char *label);
 
 /* Cleanup stack management (for EXIT/CONTINUE unwinding) */
 extern void upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
-							 llvm::Value **args, int nargs);
+							 llvm::ArrayRef<llvm::Value *> args);
 extern void upl_pop_cleanup(UPL_compile_ctx *ctx);
 
 /*
@@ -473,13 +414,21 @@ extern void upl_pop_cleanup(UPL_compile_ctx *ctx);
  * callbacks in ctx->callbacks to evaluate expressions and compile bodies.
  */
 
+/*
+ * One conditional branch of an IF/CASE: an ELSIF's (or WHEN's) condition
+ * expression and the statement list it guards.  Both opaque to core.
+ */
+typedef struct UPL_branch
+{
+	void	   *cond;
+	void	   *body;
+} UPL_branch;
+
 /* IF/ELSIF/ELSE */
 extern void upl_emit_if(UPL_compile_ctx *ctx,
 						void *cond_expr,
 						void *then_stmts,
-						int num_elsifs,
-						void **elsif_conds,
-						void **elsif_bodies,
+						llvm::ArrayRef<UPL_branch> elsifs,
 						void *else_stmts);
 
 /* Conditional loop (WHILE = test_at_top, REPEAT UNTIL = test_at_bottom) */
@@ -505,9 +454,7 @@ extern void upl_emit_loop_exit(UPL_compile_ctx *ctx, const char *label,
 extern void upl_emit_case(UPL_compile_ctx *ctx,
 						  bool has_test_expr, int test_varno,
 						  void *test_assign_expr,
-						  int num_whens,
-						  void **when_conds,
-						  void **when_bodies,
+						  llvm::ArrayRef<UPL_branch> whens,
 						  bool has_else, void *else_body,
 						  int lineno);
 
@@ -517,7 +464,7 @@ extern void upl_emit_return(UPL_compile_ctx *ctx, int rt_exec_return,
 
 /* Block with variable init + optional exception handling */
 extern void upl_emit_block(UPL_compile_ctx *ctx,
-						   int n_initvars, int *initvarnos,
+						   llvm::ArrayRef<int> initvarnos,
 						   void *body_stmts,
 						   bool has_exceptions, void *exception_data,
 						   void (*compile_exceptions)(UPL_compile_ctx *ctx,
@@ -525,21 +472,18 @@ extern void upl_emit_block(UPL_compile_ctx *ctx,
 
 /* Simple runtime call (thin wrapper for common pattern) */
 extern llvm::Value *upl_emit_rt_call(UPL_compile_ctx *ctx, int rt_func_idx,
-									 llvm::Value **args, unsigned count);
+									 llvm::ArrayRef<llvm::Value *> args);
 
 /* Direct function pointer call (bypasses RT wrapper, embeds address) */
 extern llvm::Value *upl_emit_direct_call(UPL_compile_ctx *ctx, void *fn_addr,
 										 llvm::Type *ret_type,
-										 llvm::Value **args, unsigned count);
+										 llvm::ArrayRef<llvm::Value *> args);
 
 /* --- core/upl_datum.cpp --- */
 
 /* Parameterized datum access via GEP — uses ctx->datum_offsets */
 extern llvm::Value *upl_emit_load_var_datum(UPL_compile_ctx *ctx,
 											llvm::Value *estate_ref, int dno);
-extern void upl_emit_store_var_datum(UPL_compile_ctx *ctx,
-									 llvm::Value *estate_ref, int dno,
-									 llvm::Value *datum_val);
 extern llvm::Value *upl_emit_load_var_isnull(UPL_compile_ctx *ctx,
 											 llvm::Value *estate_ref, int dno);
 
