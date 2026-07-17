@@ -59,12 +59,18 @@
  */
 #include "upl_common.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "catalog/pg_type_d.h"
 #include "executor/spi_priv.h"
 #include "utils/expandedrecord.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/plancache.h"
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Convenience macros for accessing PL/pgSQL-specific lang_data fields
@@ -855,13 +861,13 @@ native_array_check_stmt(UPLpgSQL_function *func, UPLpgSQL_stmt *stmt,
 					for (dno = 0; dno < ndatums; dno++)
 					{
 						if (candidates[dno] &&
-							expr_references_dno(lfirst(lc), dno))
+							expr_references_dno((UPLpgSQL_expr *) lfirst(lc), dno))
 							candidates[dno] = false;
 					}
 				}
 				foreach(lc, r->options)
 				{
-					UPLpgSQL_raise_option *opt = lfirst(lc);
+					UPLpgSQL_raise_option *opt = (UPLpgSQL_raise_option *) lfirst(lc);
 
 					for (dno = 0; dno < ndatums; dno++)
 					{
@@ -903,7 +909,7 @@ native_array_check_stmt(UPLpgSQL_function *func, UPLpgSQL_stmt *stmt,
 					for (dno = 0; dno < ndatums; dno++)
 					{
 						if (candidates[dno] &&
-							expr_references_dno(lfirst(lc), dno))
+							expr_references_dno((UPLpgSQL_expr *) lfirst(lc), dno))
 							candidates[dno] = false;
 					}
 				}
@@ -963,7 +969,7 @@ native_array_check_stmt(UPLpgSQL_function *func, UPLpgSQL_stmt *stmt,
 				{
 					foreach(lc, b->exceptions->exc_list)
 					{
-						UPLpgSQL_exception *exc = lfirst(lc);
+						UPLpgSQL_exception *exc = (UPLpgSQL_exception *) lfirst(lc);
 
 						native_array_check_stmts(func, exc->action,
 												 candidates, ndatums);
@@ -988,7 +994,7 @@ native_array_check_stmt(UPLpgSQL_function *func, UPLpgSQL_stmt *stmt,
 										 candidates, ndatums);
 				foreach(lc, i->elsif_list)
 				{
-					UPLpgSQL_if_elsif *elif = lfirst(lc);
+					UPLpgSQL_if_elsif *elif = (UPLpgSQL_if_elsif *) lfirst(lc);
 
 					for (dno = 0; dno < ndatums; dno++)
 					{
@@ -1017,7 +1023,7 @@ native_array_check_stmt(UPLpgSQL_function *func, UPLpgSQL_stmt *stmt,
 				}
 				foreach(lc, c->case_when_list)
 				{
-					UPLpgSQL_case_when *w = lfirst(lc);
+					UPLpgSQL_case_when *w = (UPLpgSQL_case_when *) lfirst(lc);
 
 					for (dno = 0; dno < ndatums; dno++)
 					{
@@ -1123,7 +1129,7 @@ native_array_check_stmts(UPLpgSQL_function *func, List *stmts,
 		return;
 
 	foreach(lc, stmts)
-		native_array_check_stmt(func, lfirst(lc), candidates, ndatums);
+		native_array_check_stmt(func, (UPLpgSQL_stmt *) lfirst(lc), candidates, ndatums);
 }
 
 /*
@@ -1154,7 +1160,7 @@ uplpgsql_analyze_native_arrays(UPLpgSQL_compile_ctx *ctx,
 	if (ndatums == 0)
 		return;
 
-	candidates = palloc0(sizeof(bool) * ndatums);
+	candidates = (bool *) palloc0(sizeof(bool) * ndatums);
 
 	/* Step 1: Identify candidate array variables */
 	for (i = 0; i < ndatums; i++)
@@ -1208,7 +1214,7 @@ uplpgsql_analyze_native_arrays(UPLpgSQL_compile_ctx *ctx,
 	{
 		int idx = 0;
 
-		ctx_native_arrays(ctx) = palloc(sizeof(UPLpgSQL_native_array) * count);
+		ctx_native_arrays(ctx) = (UPLpgSQL_native_array *) palloc(sizeof(UPLpgSQL_native_array) * count);
 		ctx_num_native_arrays(ctx) = count;
 
 		for (i = 0; i < ndatums; i++)
@@ -1291,7 +1297,7 @@ uplpgsql_jit_score_stmt(UPLpgSQL_stmt *stmt, int loop_depth)
 												  loop_depth);
 				foreach(lc, ifstmt->elsif_list)
 				{
-					UPLpgSQL_if_elsif *ei = lfirst(lc);
+					UPLpgSQL_if_elsif *ei = (UPLpgSQL_if_elsif *) lfirst(lc);
 
 					score += 1 * mult;
 					score += uplpgsql_jit_score_stmts(ei->stmts, loop_depth);
@@ -1310,7 +1316,7 @@ uplpgsql_jit_score_stmt(UPLpgSQL_stmt *stmt, int loop_depth)
 				score = 1 * mult;
 				foreach(lc, cs->case_when_list)
 				{
-					UPLpgSQL_case_when *cw = lfirst(lc);
+					UPLpgSQL_case_when *cw = (UPLpgSQL_case_when *) lfirst(lc);
 
 					score += 1 * mult;
 					score += uplpgsql_jit_score_stmts(cw->stmts, loop_depth);
@@ -1500,8 +1506,8 @@ uplpgsql_compile_function(UPLpgSQL_function *func)
 
 	/* Allocate RT function arrays */
 	ctx.num_rt_funcs = UPLPGSQL_NUM_RT_FUNCS;
-	ctx.rt_funcs = palloc0(sizeof(LLVMValueRef) * UPLPGSQL_NUM_RT_FUNCS);
-	ctx.rt_fntypes = palloc0(sizeof(LLVMTypeRef) * UPLPGSQL_NUM_RT_FUNCS);
+	ctx.rt_funcs = (LLVMValueRef *) palloc0(sizeof(LLVMValueRef) * UPLPGSQL_NUM_RT_FUNCS);
+	ctx.rt_fntypes = (LLVMTypeRef *) palloc0(sizeof(LLVMTypeRef) * UPLPGSQL_NUM_RT_FUNCS);
 
 	/* Setup callbacks */
 	ctx.callbacks.compile_stmts = uplpgsql_cb_compile_stmts;
@@ -2693,8 +2699,8 @@ uplpgsql_compile_if(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_if *stmt)
 		ListCell   *lc;
 		int			i = 0;
 
-		elsif_conds = palloc(sizeof(void *) * num_elsifs);
-		elsif_bodies = palloc(sizeof(void *) * num_elsifs);
+		elsif_conds = (void **) palloc(sizeof(void *) * num_elsifs);
+		elsif_bodies = (void **) palloc(sizeof(void *) * num_elsifs);
 
 		foreach(lc, stmt->elsif_list)
 		{
@@ -3000,8 +3006,8 @@ uplpgsql_compile_case(UPLpgSQL_compile_ctx *ctx, UPLpgSQL_stmt_case *stmt)
 	ListCell   *lc;
 	int			i;
 
-	when_conds = palloc(sizeof(void *) * num_whens);
-	when_bodies = palloc(sizeof(void *) * num_whens);
+	when_conds = (void **) palloc(sizeof(void *) * num_whens);
+	when_bodies = (void **) palloc(sizeof(void *) * num_whens);
 
 	i = 0;
 	foreach(lc, stmt->case_when_list)

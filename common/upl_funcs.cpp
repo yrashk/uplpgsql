@@ -30,10 +30,23 @@
  *-------------------------------------------------------------------------
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "postgres.h"
+#ifdef __cplusplus
+}
+#endif
 
 #include "upl_plpgsql.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "utils/memutils.h"
+#ifdef __cplusplus
+}
+#endif
 
 /* ----------
  * Local variables for namespace handling
@@ -114,7 +127,7 @@ uplpgsql_ns_additem(UPLpgSQL_nsitem_type itemtype, int itemno, const char *name)
 	/* first item added must be a label */
 	Assert(ns_top != NULL || itemtype == UPLPGSQL_NSTYPE_LABEL);
 
-	nse = palloc(offsetof(UPLpgSQL_nsitem, name) + strlen(name) + 1);
+	nse = (UPLpgSQL_nsitem *) palloc(offsetof(UPLpgSQL_nsitem, name) + strlen(name) + 1);
 	nse->itemtype = itemtype;
 	nse->itemno = itemno;
 	nse->prev = ns_top;

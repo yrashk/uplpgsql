@@ -30,6 +30,9 @@
  *-------------------------------------------------------------------------
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "postgres.h"
 
 #include <ctype.h>
@@ -41,7 +44,13 @@
 #include "funcapi.h"
 #include "nodes/makefuncs.h"
 #include "parser/parse_node.h"
+#ifdef __cplusplus
+}
+#endif
 #include "upl_plpgsql.h"
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/guc.h"
@@ -50,6 +59,9 @@
 #include "utils/regproc.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+#ifdef __cplusplus
+}
+#endif
 
 /* ----------
  * Our own local and global variables
@@ -134,7 +146,7 @@ uplpgsql_compile(FunctionCallInfo fcinfo, bool forValidator)
 	 */
 	function = (UPLpgSQL_function *)
 		cached_function_compile(fcinfo,
-								fcinfo->flinfo->fn_extra,
+								(CachedFunction *) fcinfo->flinfo->fn_extra,
 								uplpgsql_compile_callback,
 								uplpgsql_delete_callback,
 								sizeof(UPLpgSQL_function),
@@ -264,7 +276,7 @@ uplpgsql_compile_callback(FunctionCallInfo fcinfo,
 	function->fn_input_collation = fcinfo->fncollation;
 	function->fn_cxt = func_cxt;
 	function->out_param_varno = -1; /* set up for no OUT param */
-	function->resolve_option = uplpgsql_variable_conflict;
+	function->resolve_option = (UPLpgSQL_resolve_option) uplpgsql_variable_conflict;
 	function->print_strict_params = uplpgsql_print_strict_params;
 	/* only promote extra warnings and errors at CREATE FUNCTION time */
 	function->extra_warnings = forValidator ? uplpgsql_extra_warnings : 0;
@@ -807,7 +819,7 @@ uplpgsql_compile_inline(char *proc_source)
 	function->fn_input_collation = InvalidOid;
 	function->fn_cxt = func_cxt;
 	function->out_param_varno = -1; /* set up for no OUT param */
-	function->resolve_option = uplpgsql_variable_conflict;
+	function->resolve_option = (UPLpgSQL_resolve_option) uplpgsql_variable_conflict;
 	function->print_strict_params = uplpgsql_print_strict_params;
 
 	/*
@@ -969,28 +981,28 @@ add_dummy_return(UPLpgSQL_function *function)
 	if (function->action->exceptions != NULL ||
 		function->action->label != NULL)
 	{
-		UPLpgSQL_stmt_block *new;
+		UPLpgSQL_stmt_block *newp;
 
-		new = palloc0_object(UPLpgSQL_stmt_block);
-		new->cmd_type = UPLPGSQL_STMT_BLOCK;
-		new->stmtid = ++function->nstatements;
-		new->body = list_make1(function->action);
-		new->sqlstate_varno = -1;
+		newp = palloc0_object(UPLpgSQL_stmt_block);
+		newp->cmd_type = UPLPGSQL_STMT_BLOCK;
+		newp->stmtid = ++function->nstatements;
+		newp->body = list_make1(function->action);
+		newp->sqlstate_varno = -1;
 
-		function->action = new;
+		function->action = newp;
 	}
 	if (function->action->body == NIL ||
 		((UPLpgSQL_stmt *) llast(function->action->body))->cmd_type != UPLPGSQL_STMT_RETURN)
 	{
-		UPLpgSQL_stmt_return *new;
+		UPLpgSQL_stmt_return *newp;
 
-		new = palloc0_object(UPLpgSQL_stmt_return);
-		new->cmd_type = UPLPGSQL_STMT_RETURN;
-		new->stmtid = ++function->nstatements;
-		new->expr = NULL;
-		new->retvarno = function->out_param_varno;
+		newp = palloc0_object(UPLpgSQL_stmt_return);
+		newp->cmd_type = UPLPGSQL_STMT_RETURN;
+		newp->stmtid = ++function->nstatements;
+		newp->expr = NULL;
+		newp->retvarno = function->out_param_varno;
 
-		function->action->body = lappend(function->action->body, new);
+		function->action->body = lappend(function->action->body, newp);
 	}
 }
 
@@ -1419,12 +1431,12 @@ uplpgsql_parse_dblword(char *word1, char *word2,
 						 * detected later.
 						 */
 						UPLpgSQL_rec *rec;
-						UPLpgSQL_recfield *new;
+						UPLpgSQL_recfield *newp;
 
 						rec = (UPLpgSQL_rec *) (uplpgsql_Datums[ns->itemno]);
-						new = uplpgsql_build_recfield(rec, word2);
+						newp = uplpgsql_build_recfield(rec, word2);
 
-						wdatum->datum = (UPLpgSQL_datum *) new;
+						wdatum->datum = (UPLpgSQL_datum *) newp;
 					}
 					else
 					{
@@ -1484,7 +1496,7 @@ uplpgsql_parse_tripword(char *word1, char *word2, char *word3,
 				case UPLPGSQL_NSTYPE_REC:
 					{
 						UPLpgSQL_rec *rec;
-						UPLpgSQL_recfield *new;
+						UPLpgSQL_recfield *newp;
 
 						rec = (UPLpgSQL_rec *) (uplpgsql_Datums[ns->itemno]);
 						if (nnames == 1)
@@ -1496,19 +1508,19 @@ uplpgsql_parse_tripword(char *word1, char *word2, char *word3,
 							 * whether it is or not --- any error will be
 							 * detected later.
 							 */
-							new = uplpgsql_build_recfield(rec, word2);
+							newp = uplpgsql_build_recfield(rec, word2);
 							idents = list_make2(makeString(word1),
 												makeString(word2));
 						}
 						else
 						{
 							/* Block-qualified reference to record variable. */
-							new = uplpgsql_build_recfield(rec, word3);
+							newp = uplpgsql_build_recfield(rec, word3);
 							idents = list_make3(makeString(word1),
 												makeString(word2),
 												makeString(word3));
 						}
-						wdatum->datum = (UPLpgSQL_datum *) new;
+						wdatum->datum = (UPLpgSQL_datum *) newp;
 						wdatum->ident = NULL;
 						wdatum->quoted = false; /* not used */
 						wdatum->idents = idents;
@@ -2200,7 +2212,7 @@ UPLpgSQL_condition *
 uplpgsql_parse_err_condition(char *condname)
 {
 	int			i;
-	UPLpgSQL_condition *new;
+	UPLpgSQL_condition *newp;
 	UPLpgSQL_condition *prev;
 
 	/*
@@ -2210,11 +2222,11 @@ uplpgsql_parse_err_condition(char *condname)
 
 	if (strcmp(condname, "others") == 0)
 	{
-		new = palloc_object(UPLpgSQL_condition);
-		new->sqlerrstate = UPLPGSQL_OTHERS;
-		new->condname = condname;
-		new->next = NULL;
-		return new;
+		newp = palloc_object(UPLpgSQL_condition);
+		newp->sqlerrstate = UPLPGSQL_OTHERS;
+		newp->condname = condname;
+		newp->next = NULL;
+		return newp;
 	}
 
 	prev = NULL;
@@ -2222,11 +2234,11 @@ uplpgsql_parse_err_condition(char *condname)
 	{
 		if (strcmp(condname, exception_label_map[i].label) == 0)
 		{
-			new = palloc_object(UPLpgSQL_condition);
-			new->sqlerrstate = exception_label_map[i].sqlerrstate;
-			new->condname = condname;
-			new->next = prev;
-			prev = new;
+			newp = palloc_object(UPLpgSQL_condition);
+			newp->sqlerrstate = exception_label_map[i].sqlerrstate;
+			newp->condname = condname;
+			newp->next = prev;
+			prev = newp;
 		}
 	}
 
@@ -2249,7 +2261,7 @@ uplpgsql_start_datums(void)
 	datums_alloc = 128;
 	uplpgsql_nDatums = 0;
 	/* This is short-lived, so needn't allocate in function's cxt */
-	uplpgsql_Datums = MemoryContextAlloc(uplpgsql_compile_tmp_cxt,
+	uplpgsql_Datums = (UPLpgSQL_datum **) MemoryContextAlloc(uplpgsql_compile_tmp_cxt,
 										sizeof(UPLpgSQL_datum *) * datums_alloc);
 	/* datums_last tracks what's been seen by uplpgsql_add_initdatums() */
 	datums_last = 0;
@@ -2266,7 +2278,7 @@ uplpgsql_adddatum(UPLpgSQL_datum *newdatum)
 	if (uplpgsql_nDatums == datums_alloc)
 	{
 		datums_alloc *= 2;
-		uplpgsql_Datums = repalloc(uplpgsql_Datums, sizeof(UPLpgSQL_datum *) * datums_alloc);
+		uplpgsql_Datums = (UPLpgSQL_datum **) repalloc(uplpgsql_Datums, sizeof(UPLpgSQL_datum *) * datums_alloc);
 	}
 
 	newdatum->dno = uplpgsql_nDatums;

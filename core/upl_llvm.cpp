@@ -63,7 +63,13 @@
  */
 #include "upl.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "miscadmin.h"
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Per-backend LLVM state.

@@ -30,10 +30,18 @@
  *
  *-------------------------------------------------------------------------
  */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "postgres.h"
 
 #include "mb/pg_wchar.h"
 #include "parser/scanner.h"
+
+#ifdef __cplusplus
+}
+#endif
 
 #include "upl_plpgsql.h"
 #include "upl_gram.h"			/* must be after parser/scanner.h */

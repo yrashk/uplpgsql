@@ -72,7 +72,13 @@
 
 #include <math.h>				/* INFINITY */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "utils/datum.h"		/* datumCopy */
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Convenience macros for accessing PL/pgSQL-specific lang_data fields.
@@ -83,6 +89,9 @@
 #define ctx_native_arrays(ctx)	(ctx_lang(ctx)->native_arrays)
 #define ctx_num_native_arrays(ctx) (ctx_lang(ctx)->num_native_arrays)
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "access/transam.h"
 #include "catalog/pg_type_d.h"
 #include "utils/memutils.h"
@@ -94,6 +103,9 @@
 #include "utils/expandedrecord.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Struct offsets for GEP-based variable access.
@@ -1258,8 +1270,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_INT4 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_INT4)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1271,8 +1283,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_INT8 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_INT8)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1291,8 +1303,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_FLOAT8 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_FLOAT8)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_FLOAT8 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_FLOAT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1302,8 +1314,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_BOOL ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_BOOL)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_BOOL ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_BOOL)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1315,8 +1327,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_INT8 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_INT4)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1326,8 +1338,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_INT4 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_INT8)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_BOOL;
 				}
@@ -1338,8 +1350,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_INT8 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_INT4)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT8 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT4)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_INT8;
 				}
@@ -1348,8 +1360,8 @@ uplpgsql_classify_expr(Expr *expr)
 				{
 					if (list_length(op->args) != 2)
 						return EXPR_TYPE_UNKNOWN;
-					if (uplpgsql_classify_expr(linitial(op->args)) != EXPR_TYPE_INT4 ||
-						uplpgsql_classify_expr(lsecond(op->args)) != EXPR_TYPE_INT8)
+					if (uplpgsql_classify_expr((Expr *) linitial(op->args)) != EXPR_TYPE_INT4 ||
+						uplpgsql_classify_expr((Expr *) lsecond(op->args)) != EXPR_TYPE_INT8)
 						return EXPR_TYPE_UNKNOWN;
 					return EXPR_TYPE_INT8;
 				}
@@ -1367,8 +1379,8 @@ uplpgsql_classify_expr(Expr *expr)
 					(f->funcid == F_DPOW ||
 					 f->funcid == F_POW_FLOAT8_FLOAT8 ||
 					 f->funcid == F_POWER_FLOAT8_FLOAT8) &&
-					uplpgsql_classify_expr(linitial(f->args)) == EXPR_TYPE_FLOAT8 &&
-					uplpgsql_classify_expr(lsecond(f->args)) == EXPR_TYPE_FLOAT8)
+					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8 &&
+					uplpgsql_classify_expr((Expr *) lsecond(f->args)) == EXPR_TYPE_FLOAT8)
 					return EXPR_TYPE_FLOAT8;
 
 				if (nargs != 1)
@@ -1376,15 +1388,15 @@ uplpgsql_classify_expr(Expr *expr)
 
 				/* ABS functions */
 				if (f->funcid == F_INT4ABS &&
-					uplpgsql_classify_expr(linitial(f->args)) == EXPR_TYPE_INT4)
+					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_INT4)
 					return EXPR_TYPE_INT4;
 
 				if (f->funcid == F_INT8ABS &&
-					uplpgsql_classify_expr(linitial(f->args)) == EXPR_TYPE_INT8)
+					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_INT8)
 					return EXPR_TYPE_INT8;
 
 				if (f->funcid == F_FLOAT8ABS &&
-					uplpgsql_classify_expr(linitial(f->args)) == EXPR_TYPE_FLOAT8)
+					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8)
 					return EXPR_TYPE_FLOAT8;
 
 				/* Single-arg float8 math intrinsics */
@@ -1399,7 +1411,7 @@ uplpgsql_classify_expr(Expr *expr)
 					 f->funcid == F_LN_FLOAT8 ||
 					 f->funcid == F_SIN ||
 					 f->funcid == F_COS) &&
-					uplpgsql_classify_expr(linitial(f->args)) == EXPR_TYPE_FLOAT8)
+					uplpgsql_classify_expr((Expr *) linitial(f->args)) == EXPR_TYPE_FLOAT8)
 					return EXPR_TYPE_FLOAT8;
 
 				/*
@@ -1411,7 +1423,7 @@ uplpgsql_classify_expr(Expr *expr)
 				if (f->funcid == F_FLOAT8_INT4 || f->funcid == F_FLOAT8_INT2)
 				{
 					ExprTypeClass argclass =
-						uplpgsql_classify_expr(linitial(f->args));
+						uplpgsql_classify_expr((Expr *) linitial(f->args));
 					if (argclass == EXPR_TYPE_INT4)
 						return EXPR_TYPE_FLOAT8;
 				}
@@ -1419,7 +1431,7 @@ uplpgsql_classify_expr(Expr *expr)
 				if (f->funcid == F_FLOAT8_INT8)
 				{
 					ExprTypeClass argclass =
-						uplpgsql_classify_expr(linitial(f->args));
+						uplpgsql_classify_expr((Expr *) linitial(f->args));
 					if (argclass == EXPR_TYPE_INT8)
 						return EXPR_TYPE_FLOAT8;
 				}
@@ -1468,7 +1480,7 @@ uplpgsql_classify_expr(Expr *expr)
 					sbsref->reflowerindexpr == NIL &&
 					IsA(sbsref->refexpr, Param) &&
 					((Param *) sbsref->refexpr)->paramkind == PARAM_EXTERN &&
-					uplpgsql_classify_expr(linitial(sbsref->refupperindexpr)) == EXPR_TYPE_INT4)
+					uplpgsql_classify_expr((Expr *) linitial(sbsref->refupperindexpr)) == EXPR_TYPE_INT4)
 				{
 					Oid elemtype = sbsref->refrestype;
 
@@ -2500,7 +2512,7 @@ uplpgsql_compile_expr_bool(UPLpgSQL_compile_ctx *ctx, Expr *expr,
 			{
 				OpExpr	   *op = (OpExpr *) expr;
 				Oid			fid = op->opfuncid;
-				LLVMIntPredicate int_pred = 0;
+				LLVMIntPredicate int_pred = (LLVMIntPredicate) 0;
 
 				bool		is_float_cmp = false;
 				bool		is_cross_cmp = false;
@@ -4085,7 +4097,7 @@ uplpgsql_try_compile_assign(UPLpgSQL_compile_ctx *ctx,
 			fill_arg = (Expr *) linitial(fexpr->args);
 
 			{
-				Node *size_node = lsecond(fexpr->args);
+				Node *size_node = (Node *) lsecond(fexpr->args);
 
 				/* The size argument is ARRAY[n] — an ArrayExpr */
 				if (IsA(size_node, ArrayExpr))

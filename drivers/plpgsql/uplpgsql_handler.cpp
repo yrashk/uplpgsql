@@ -47,6 +47,10 @@
  */
 #include "upl_common.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "access/xact.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -62,13 +66,25 @@
 #include "utils/syscache.h"
 #include "utils/varlena.h"
 
+#ifdef __cplusplus
+}
+#endif
+
 /* Extension version, as reported by PG_MODULE_MAGIC_EXT and \dx */
 #define UPLPGSQL_VERSION	"1.0"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 PG_MODULE_MAGIC_EXT(
 					.name = "uplpgsql",
 					.version = UPLPGSQL_VERSION
 );
+
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Forked PL/pgSQL global variables (originally in pl_handler.c).
@@ -128,9 +144,16 @@ uplpgsql_cache_check(void *cached_lang_func, void *current_lang_func)
 }
 
 /* Function declarations */
+#ifdef __cplusplus
+extern "C" {
+#endif
 PG_FUNCTION_INFO_V1(uplpgsql_call_handler);
 PG_FUNCTION_INFO_V1(uplpgsql_inline_handler);
 PG_FUNCTION_INFO_V1(uplpgsql_validator);
+#ifdef __cplusplus
+extern void _PG_init(void);
+}
+#endif
 
 /*
  * _PG_init - module load callback

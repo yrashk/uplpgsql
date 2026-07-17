@@ -13,7 +13,7 @@ UPL_LLVM_CFLAGS := $(shell $(UPL_LLVM_CONFIG) --cflags)
 
 CORE_DIR = ../core
 
-CC ?= cc
+CXX ?= c++
 
 # -fPIC: these objects are archived into a static library that is linked
 # into the driver's shared object; ELF platforms require
@@ -23,11 +23,10 @@ CC ?= cc
 # included, into a .d file we read back below.  A hand-written header list
 # goes stale silently — it rebuilds nothing when a header it forgot changes,
 # and the result is testing a binary that does not match the source.
-CFLAGS = -Wall -Wmissing-prototypes -Wpointer-arith \
-	-Wdeclaration-after-statement -Werror=vla \
+CXXFLAGS = -std=c++20 -Wall -Wpointer-arith -Werror=vla \
 	-Wendif-labels -Wmissing-format-attribute \
 	-Wformat-security -fno-strict-aliasing -fwrapv \
-	-fvisibility=hidden -fPIC -O2 -MMD -MP \
+	-fvisibility=hidden -fvisibility-inlines-hidden -fPIC -O2 -MMD -MP \
 	-I$(PG_INCLUDEDIR_SERVER) \
 	-I$(CORE_DIR) \
 	$(UPL_LLVM_CFLAGS)
@@ -46,8 +45,8 @@ $(LIB): $(OBJS)
 	rm -f $@
 	ar rcs $@ $^
 
-%.o: %.c
-	$(CC) $(CFLAGS) -c -o $@ $<
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 clean:
 	rm -f $(OBJS) $(DEPS) $(LIB)

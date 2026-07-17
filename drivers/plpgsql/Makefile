@@ -44,7 +44,7 @@ PG_CPPFLAGS += $(UPL_LLVM_CFLAGS) -I$(CORE_DIR) -I$(COMMON_DIR)
 # -MMD -MP: record each object's real header dependencies (see the -include
 # below).  PGXS only tracks them if PostgreSQL itself was configured with
 # --enable-depend, which is not something an extension can rely on.
-PG_CFLAGS += $(UPL_LLVM_CFLAGS) -MMD -MP
+PG_CXXFLAGS += -std=c++20 $(UPL_LLVM_CFLAGS) -MMD -MP
 # The RT helper symbols in libupl_common.a are only reached from JIT'd code
 # (never referenced from C), so the linker would otherwise drop them.  Force the
 # whole common archive in.  The spelling differs by linker: ld64 (macOS) takes
@@ -55,8 +55,17 @@ else
 UPL_FORCE_COMMON := -Wl,--whole-archive $(COMMON_DIR)/libupl_common.a -Wl,--no-whole-archive
 endif
 
+# The objects are C++ now; PGXS links MODULE_big with $(CC), so pull in the
+# C++ runtime explicitly.
+ifeq ($(shell uname -s),Darwin)
+UPL_CXX_RTLIB := -lc++
+else
+UPL_CXX_RTLIB := -lstdc++
+endif
+
 SHLIB_LINK += $(UPL_FORCE_COMMON) $(CORE_DIR)/libupl_core.a \
-	$(UPL_LLVM_LDFLAGS) $(UPL_LLVM_LIBS) $(UPL_LLVM_SYSLIBS)
+	$(UPL_LLVM_LDFLAGS) $(UPL_LLVM_LIBS) $(UPL_LLVM_SYSLIBS) \
+	$(UPL_CXX_RTLIB)
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)

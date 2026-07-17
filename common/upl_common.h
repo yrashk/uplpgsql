@@ -41,15 +41,26 @@
 #ifndef UPL_COMMON_H
 #define UPL_COMMON_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "postgres.h"
 #include "fmgr.h"
 #include "executor/spi.h"
+#ifdef __cplusplus
+}
+#endif
+
 #include "upl_plpgsql.h"
 
 #include <setjmp.h>
 
 /* Core UPL engine header */
 #include "../core/upl.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * Return codes from JIT'd functions.
@@ -520,5 +531,9 @@ extern void uplpgsql_rt_native_array_reserve(UPLpgSQL_exec_state *estate,
 /* Free a native array's previous flat buffers before they are replaced */
 extern void uplpgsql_rt_native_array_release(void *data, bool *nulls,
 											 int8 is_heap);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif							/* UPL_COMMON_H */

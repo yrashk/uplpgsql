@@ -371,6 +371,10 @@
  *-------------------------------------------------------------------------
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "postgres.h"
 
 #include "catalog/namespace.h"
@@ -381,6 +385,10 @@
 #include "parser/scanner.h"
 #include "parser/scansup.h"
 #include "utils/builtins.h"
+
+#ifdef __cplusplus
+}
+#endif
 
 #include "upl_plpgsql.h"
 
@@ -498,7 +506,7 @@ static	void			check_raise_parameters(UPLpgSQL_stmt_raise *stmt);
 
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
 typedef union YYSTYPE
-#line 149 "upl_gram.y"
+#line 157 "upl_gram.y"
 {
 	core_YYSTYPE core_yystype;
 	/* these fields must match core_YYSTYPE: */
@@ -550,7 +558,7 @@ typedef union YYSTYPE
 	UPLpgSQL_case_when *casewhen;
 }
 /* Line 193 of yacc.c.  */
-#line 554 "upl_gram.c"
+#line 562 "upl_gram.c"
 	YYSTYPE;
 # define yystype YYSTYPE /* obsolescent; will be withdrawn */
 # define YYSTYPE_IS_DECLARED 1
@@ -575,7 +583,7 @@ typedef struct YYLTYPE
 
 
 /* Line 216 of yacc.c.  */
-#line 579 "upl_gram.c"
+#line 587 "upl_gram.c"
 
 #ifdef short
 # undef short
@@ -2397,7 +2405,7 @@ yyreduce:
   switch (yyn)
     {
         case 2:
-#line 392 "upl_gram.y"
+#line 400 "upl_gram.y"
     {
 						*uplpgsql_parse_result_p = (UPLpgSQL_stmt_block *) (yyvsp[(2) - (3)].stmt);
 						(void) yynerrs;		/* suppress compiler warning */
@@ -2405,14 +2413,14 @@ yyreduce:
     break;
 
   case 5:
-#line 403 "upl_gram.y"
+#line 411 "upl_gram.y"
     {
 						uplpgsql_DumpExecTree = true;
 					;}
     break;
 
   case 6:
-#line 407 "upl_gram.y"
+#line 415 "upl_gram.y"
     {
 						if (strcmp((yyvsp[(3) - (3)].str), "on") == 0)
 							uplpgsql_curr_compile->print_strict_params = true;
@@ -2424,66 +2432,66 @@ yyreduce:
     break;
 
   case 7:
-#line 416 "upl_gram.y"
+#line 424 "upl_gram.y"
     {
 						uplpgsql_curr_compile->resolve_option = UPLPGSQL_RESOLVE_ERROR;
 					;}
     break;
 
   case 8:
-#line 420 "upl_gram.y"
+#line 428 "upl_gram.y"
     {
 						uplpgsql_curr_compile->resolve_option = UPLPGSQL_RESOLVE_VARIABLE;
 					;}
     break;
 
   case 9:
-#line 424 "upl_gram.y"
+#line 432 "upl_gram.y"
     {
 						uplpgsql_curr_compile->resolve_option = UPLPGSQL_RESOLVE_COLUMN;
 					;}
     break;
 
   case 10:
-#line 430 "upl_gram.y"
+#line 438 "upl_gram.y"
     {
 					(yyval.str) = (yyvsp[(1) - (1)].word).ident;
 				;}
     break;
 
   case 11:
-#line 434 "upl_gram.y"
+#line 442 "upl_gram.y"
     {
 					(yyval.str) = pstrdup((yyvsp[(1) - (1)].keyword));
 				;}
     break;
 
   case 14:
-#line 443 "upl_gram.y"
+#line 451 "upl_gram.y"
     {
-						UPLpgSQL_stmt_block *new;
+						UPLpgSQL_stmt_block *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_block);
+						newp = palloc0_object(UPLpgSQL_stmt_block);
 
-						new->cmd_type	= UPLPGSQL_STMT_BLOCK;
-						new->lineno		= uplpgsql_location_to_lineno((yylsp[(2) - (6)]), yyscanner);
-						new->stmtid		= ++uplpgsql_curr_compile->nstatements;
-						new->label		= (yyvsp[(1) - (6)].declhdr).label;
-						new->n_initvars = (yyvsp[(1) - (6)].declhdr).n_initvars;
-						new->initvarnos = (yyvsp[(1) - (6)].declhdr).initvarnos;
-						new->body		= (yyvsp[(3) - (6)].list);
-						new->exceptions	= (yyvsp[(4) - (6)].exception_block);
-						new->sqlstate_varno = -1;
+						newp->cmd_type	= UPLPGSQL_STMT_BLOCK;
+						newp->lineno		= uplpgsql_location_to_lineno((yylsp[(2) - (6)]), yyscanner);
+						newp->stmtid		= ++uplpgsql_curr_compile->nstatements;
+						newp->label		= (yyvsp[(1) - (6)].declhdr).label;
+						newp->n_initvars = (yyvsp[(1) - (6)].declhdr).n_initvars;
+						newp->initvarnos = (yyvsp[(1) - (6)].declhdr).initvarnos;
+						newp->body		= (yyvsp[(3) - (6)].list);
+						newp->exceptions	= (yyvsp[(4) - (6)].exception_block);
+						newp->sqlstate_varno = -1;
 
 						check_labels((yyvsp[(1) - (6)].declhdr).label, (yyvsp[(6) - (6)].str), (yylsp[(6) - (6)]), yyscanner);
 						uplpgsql_ns_pop();
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 15:
-#line 467 "upl_gram.y"
+#line 475 "upl_gram.y"
     {
 						/* done with decls, so resume identifier lookup */
 						uplpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
@@ -2494,7 +2502,7 @@ yyreduce:
     break;
 
   case 16:
-#line 475 "upl_gram.y"
+#line 483 "upl_gram.y"
     {
 						uplpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
 						(yyval.declhdr).label	  = (yyvsp[(1) - (2)].str);
@@ -2504,7 +2512,7 @@ yyreduce:
     break;
 
   case 17:
-#line 482 "upl_gram.y"
+#line 490 "upl_gram.y"
     {
 						uplpgsql_IdentifierLookup = IDENTIFIER_LOOKUP_NORMAL;
 						(yyval.declhdr).label	  = (yyvsp[(1) - (3)].str);
@@ -2514,7 +2522,7 @@ yyreduce:
     break;
 
   case 18:
-#line 491 "upl_gram.y"
+#line 499 "upl_gram.y"
     {
 						/* Forget any variables created before block */
 						uplpgsql_add_initdatums(NULL);
@@ -2527,14 +2535,14 @@ yyreduce:
     break;
 
   case 22:
-#line 508 "upl_gram.y"
+#line 516 "upl_gram.y"
     {
 						/* We allow useless extra DECLAREs */
 					;}
     break;
 
   case 23:
-#line 512 "upl_gram.y"
+#line 520 "upl_gram.y"
     {
 						/*
 						 * Throw a helpful error if user tries to put block
@@ -2548,7 +2556,7 @@ yyreduce:
     break;
 
   case 24:
-#line 525 "upl_gram.y"
+#line 533 "upl_gram.y"
     {
 						UPLpgSQL_variable	*var;
 
@@ -2593,7 +2601,7 @@ yyreduce:
     break;
 
   case 25:
-#line 567 "upl_gram.y"
+#line 575 "upl_gram.y"
     {
 						uplpgsql_ns_additem((yyvsp[(4) - (5)].nsitem)->itemtype,
 										   (yyvsp[(4) - (5)].nsitem)->itemno, (yyvsp[(1) - (5)].varname).name);
@@ -2601,19 +2609,19 @@ yyreduce:
     break;
 
   case 26:
-#line 572 "upl_gram.y"
+#line 580 "upl_gram.y"
     { uplpgsql_ns_push((yyvsp[(1) - (3)].varname).name, UPLPGSQL_LABEL_OTHER); ;}
     break;
 
   case 27:
-#line 574 "upl_gram.y"
+#line 582 "upl_gram.y"
     {
-						UPLpgSQL_var *new;
+						UPLpgSQL_var *newp;
 
 						/* pop local namespace for cursor args */
 						uplpgsql_ns_pop();
 
-						new = (UPLpgSQL_var *)
+						newp = (UPLpgSQL_var *)
 							uplpgsql_build_variable((yyvsp[(1) - (7)].varname).name, (yyvsp[(1) - (7)].varname).lineno,
 												   uplpgsql_build_datatype(REFCURSOROID,
 																		  -1,
@@ -2621,98 +2629,98 @@ yyreduce:
 																		  NULL),
 												   true);
 
-						new->cursor_explicit_expr = (yyvsp[(7) - (7)].expr);
+						newp->cursor_explicit_expr = (yyvsp[(7) - (7)].expr);
 						if ((yyvsp[(5) - (7)].datum) == NULL)
-							new->cursor_explicit_argrow = -1;
+							newp->cursor_explicit_argrow = -1;
 						else
-							new->cursor_explicit_argrow = (yyvsp[(5) - (7)].datum)->dno;
-						new->cursor_options = CURSOR_OPT_FAST_PLAN | (yyvsp[(2) - (7)].ival);
+							newp->cursor_explicit_argrow = (yyvsp[(5) - (7)].datum)->dno;
+						newp->cursor_options = CURSOR_OPT_FAST_PLAN | (yyvsp[(2) - (7)].ival);
 					;}
     break;
 
   case 28:
-#line 598 "upl_gram.y"
+#line 606 "upl_gram.y"
     {
 						(yyval.ival) = 0;
 					;}
     break;
 
   case 29:
-#line 602 "upl_gram.y"
+#line 610 "upl_gram.y"
     {
 						(yyval.ival) = CURSOR_OPT_NO_SCROLL;
 					;}
     break;
 
   case 30:
-#line 606 "upl_gram.y"
+#line 614 "upl_gram.y"
     {
 						(yyval.ival) = CURSOR_OPT_SCROLL;
 					;}
     break;
 
   case 31:
-#line 612 "upl_gram.y"
+#line 620 "upl_gram.y"
     {
 						(yyval.expr) = read_sql_stmt(&yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 32:
-#line 618 "upl_gram.y"
+#line 626 "upl_gram.y"
     {
 						(yyval.datum) = NULL;
 					;}
     break;
 
   case 33:
-#line 622 "upl_gram.y"
+#line 630 "upl_gram.y"
     {
-						UPLpgSQL_row *new;
+						UPLpgSQL_row *newp;
 						int			i;
 						ListCell   *l;
 
-						new = palloc0_object(UPLpgSQL_row);
-						new->dtype = UPLPGSQL_DTYPE_ROW;
-						new->refname = "(unnamed row)";
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
-						new->rowtupdesc = NULL;
-						new->nfields = list_length((yyvsp[(2) - (3)].list));
-						new->fieldnames = palloc_array(char *, new->nfields);
-						new->varnos = palloc_array(int, new->nfields);
+						newp = palloc0_object(UPLpgSQL_row);
+						newp->dtype = UPLPGSQL_DTYPE_ROW;
+						newp->refname = "(unnamed row)";
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
+						newp->rowtupdesc = NULL;
+						newp->nfields = list_length((yyvsp[(2) - (3)].list));
+						newp->fieldnames = palloc_array(char *, newp->nfields);
+						newp->varnos = palloc_array(int, newp->nfields);
 
 						i = 0;
 						foreach (l, (yyvsp[(2) - (3)].list))
 						{
 							UPLpgSQL_variable *arg = (UPLpgSQL_variable *) lfirst(l);
 							Assert(!arg->isconst);
-							new->fieldnames[i] = arg->refname;
-							new->varnos[i] = arg->dno;
+							newp->fieldnames[i] = arg->refname;
+							newp->varnos[i] = arg->dno;
 							i++;
 						}
 						list_free((yyvsp[(2) - (3)].list));
 
-						uplpgsql_adddatum((UPLpgSQL_datum *) new);
-						(yyval.datum) = (UPLpgSQL_datum *) new;
+						uplpgsql_adddatum((UPLpgSQL_datum *) newp);
+						(yyval.datum) = (UPLpgSQL_datum *) newp;
 					;}
     break;
 
   case 34:
-#line 653 "upl_gram.y"
+#line 661 "upl_gram.y"
     {
 						(yyval.list) = list_make1((yyvsp[(1) - (1)].datum));
 					;}
     break;
 
   case 35:
-#line 657 "upl_gram.y"
+#line 665 "upl_gram.y"
     {
 						(yyval.list) = lappend((yyvsp[(1) - (3)].list), (yyvsp[(3) - (3)].datum));
 					;}
     break;
 
   case 36:
-#line 663 "upl_gram.y"
+#line 671 "upl_gram.y"
     {
 						(yyval.datum) = (UPLpgSQL_datum *)
 							uplpgsql_build_variable((yyvsp[(1) - (2)].varname).name, (yyvsp[(1) - (2)].varname).lineno,
@@ -2721,7 +2729,7 @@ yyreduce:
     break;
 
   case 39:
-#line 674 "upl_gram.y"
+#line 682 "upl_gram.y"
     {
 						UPLpgSQL_nsitem *nsi;
 
@@ -2739,7 +2747,7 @@ yyreduce:
     break;
 
   case 40:
-#line 689 "upl_gram.y"
+#line 697 "upl_gram.y"
     {
 						UPLpgSQL_nsitem *nsi;
 
@@ -2757,7 +2765,7 @@ yyreduce:
     break;
 
   case 41:
-#line 704 "upl_gram.y"
+#line 712 "upl_gram.y"
     {
 						UPLpgSQL_nsitem *nsi;
 
@@ -2786,7 +2794,7 @@ yyreduce:
     break;
 
   case 42:
-#line 732 "upl_gram.y"
+#line 740 "upl_gram.y"
     {
 						(yyval.varname).name = (yyvsp[(1) - (1)].word).ident;
 						(yyval.varname).lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
@@ -2817,7 +2825,7 @@ yyreduce:
     break;
 
   case 43:
-#line 760 "upl_gram.y"
+#line 768 "upl_gram.y"
     {
 						(yyval.varname).name = pstrdup((yyvsp[(1) - (1)].keyword));
 						(yyval.varname).lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
@@ -2848,17 +2856,17 @@ yyreduce:
     break;
 
   case 44:
-#line 790 "upl_gram.y"
+#line 798 "upl_gram.y"
     { (yyval.boolean) = false; ;}
     break;
 
   case 45:
-#line 792 "upl_gram.y"
+#line 800 "upl_gram.y"
     { (yyval.boolean) = true; ;}
     break;
 
   case 46:
-#line 796 "upl_gram.y"
+#line 804 "upl_gram.y"
     {
 						/*
 						 * If there's a lookahead token, read_datatype() will
@@ -2871,12 +2879,12 @@ yyreduce:
     break;
 
   case 47:
-#line 808 "upl_gram.y"
+#line 816 "upl_gram.y"
     { (yyval.oid) = InvalidOid; ;}
     break;
 
   case 48:
-#line 810 "upl_gram.y"
+#line 818 "upl_gram.y"
     {
 						(yyval.oid) = get_collation_oid(list_make1(makeString((yyvsp[(2) - (2)].word).ident)),
 											   false);
@@ -2884,7 +2892,7 @@ yyreduce:
     break;
 
   case 49:
-#line 815 "upl_gram.y"
+#line 823 "upl_gram.y"
     {
 						(yyval.oid) = get_collation_oid(list_make1(makeString(pstrdup((yyvsp[(2) - (2)].keyword)))),
 											   false);
@@ -2892,41 +2900,41 @@ yyreduce:
     break;
 
   case 50:
-#line 820 "upl_gram.y"
+#line 828 "upl_gram.y"
     {
 						(yyval.oid) = get_collation_oid((yyvsp[(2) - (2)].cword).idents, false);
 					;}
     break;
 
   case 51:
-#line 826 "upl_gram.y"
+#line 834 "upl_gram.y"
     { (yyval.boolean) = false; ;}
     break;
 
   case 52:
-#line 828 "upl_gram.y"
+#line 836 "upl_gram.y"
     { (yyval.boolean) = true; ;}
     break;
 
   case 53:
-#line 832 "upl_gram.y"
+#line 840 "upl_gram.y"
     { (yyval.expr) = NULL; ;}
     break;
 
   case 54:
-#line 834 "upl_gram.y"
+#line 842 "upl_gram.y"
     {
 						(yyval.expr) = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 59:
-#line 853 "upl_gram.y"
+#line 861 "upl_gram.y"
     { (yyval.list) = NIL; ;}
     break;
 
   case 60:
-#line 855 "upl_gram.y"
+#line 863 "upl_gram.y"
     {
 						/* don't bother linking null statements into list */
 						if ((yyvsp[(2) - (2)].stmt) == NULL)
@@ -2937,135 +2945,135 @@ yyreduce:
     break;
 
   case 61:
-#line 865 "upl_gram.y"
+#line 873 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (2)].stmt); ;}
     break;
 
   case 62:
-#line 867 "upl_gram.y"
-    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
-    break;
-
-  case 63:
-#line 869 "upl_gram.y"
-    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
-    break;
-
-  case 64:
-#line 871 "upl_gram.y"
-    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
-    break;
-
-  case 65:
-#line 873 "upl_gram.y"
-    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
-    break;
-
-  case 66:
 #line 875 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 67:
+  case 63:
 #line 877 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 68:
+  case 64:
 #line 879 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 69:
+  case 65:
 #line 881 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 70:
+  case 66:
 #line 883 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 71:
+  case 67:
 #line 885 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 72:
+  case 68:
 #line 887 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 73:
+  case 69:
 #line 889 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 74:
+  case 70:
 #line 891 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 75:
+  case 71:
 #line 893 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 76:
+  case 72:
 #line 895 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 77:
+  case 73:
 #line 897 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 78:
+  case 74:
 #line 899 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 79:
+  case 75:
 #line 901 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 80:
+  case 76:
 #line 903 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 81:
+  case 77:
 #line 905 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 82:
+  case 78:
 #line 907 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 83:
+  case 79:
 #line 909 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 84:
+  case 80:
 #line 911 "upl_gram.y"
     { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
     break;
 
-  case 85:
+  case 81:
+#line 913 "upl_gram.y"
+    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
+    break;
+
+  case 82:
 #line 915 "upl_gram.y"
+    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
+    break;
+
+  case 83:
+#line 917 "upl_gram.y"
+    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
+    break;
+
+  case 84:
+#line 919 "upl_gram.y"
+    { (yyval.stmt) = (yyvsp[(1) - (1)].stmt); ;}
+    break;
+
+  case 85:
+#line 923 "upl_gram.y"
     {
-						UPLpgSQL_stmt_perform *new;
+						UPLpgSQL_stmt_perform *newp;
 						int			startloc;
 
-						new = palloc0_object(UPLpgSQL_stmt_perform);
-						new->cmd_type = UPLPGSQL_STMT_PERFORM;
-						new->lineno   = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp = palloc0_object(UPLpgSQL_stmt_perform);
+						newp->cmd_type = UPLPGSQL_STMT_PERFORM;
+						newp->lineno   = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 						uplpgsql_push_back_token(K_PERFORM, &yylval, &yylloc, yyscanner);
 
 						/*
@@ -3076,71 +3084,71 @@ yyreduce:
 						 * We can't do syntax-checking until after we make the
 						 * substitution.
 						 */
-						new->expr = read_sql_construct(';', 0, 0, ";",
+						newp->expr = read_sql_construct(';', 0, 0, ";",
 													   RAW_PARSE_DEFAULT,
 													   false, false,
 													   &startloc, NULL,
 													   &yylval, &yylloc, yyscanner);
 						/* overwrite "perform" ... */
-						memcpy(new->expr->query, " SELECT", 7);
+						memcpy(newp->expr->query, " SELECT", 7);
 						/* left-justify to get rid of the leading space */
-						memmove(new->expr->query, new->expr->query + 1,
-								strlen(new->expr->query));
+						memmove(newp->expr->query, newp->expr->query + 1,
+								strlen(newp->expr->query));
 						/* offset syntax error position to account for that */
-						check_sql_expr(new->expr->query, new->expr->parseMode,
+						check_sql_expr(newp->expr->query, newp->expr->parseMode,
 									   startloc + 1, yyscanner);
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 86:
-#line 952 "upl_gram.y"
+#line 960 "upl_gram.y"
     {
-						UPLpgSQL_stmt_call *new;
+						UPLpgSQL_stmt_call *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_call);
-						new->cmd_type = UPLPGSQL_STMT_CALL;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp = palloc0_object(UPLpgSQL_stmt_call);
+						newp->cmd_type = UPLPGSQL_STMT_CALL;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 						uplpgsql_push_back_token(K_CALL, &yylval, &yylloc, yyscanner);
-						new->expr = read_sql_stmt(&yylval, &yylloc, yyscanner);
-						new->is_call = true;
+						newp->expr = read_sql_stmt(&yylval, &yylloc, yyscanner);
+						newp->is_call = true;
 
 						/* Remember we may need a procedure resource owner */
 						uplpgsql_curr_compile->requires_procedure_resowner = true;
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 
 					;}
     break;
 
   case 87:
-#line 970 "upl_gram.y"
+#line 978 "upl_gram.y"
     {
 						/* use the same structures as for CALL, for simplicity */
-						UPLpgSQL_stmt_call *new;
+						UPLpgSQL_stmt_call *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_call);
-						new->cmd_type = UPLPGSQL_STMT_CALL;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp = palloc0_object(UPLpgSQL_stmt_call);
+						newp->cmd_type = UPLPGSQL_STMT_CALL;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 						uplpgsql_push_back_token(K_DO, &yylval, &yylloc, yyscanner);
-						new->expr = read_sql_stmt(&yylval, &yylloc, yyscanner);
-						new->is_call = false;
+						newp->expr = read_sql_stmt(&yylval, &yylloc, yyscanner);
+						newp->is_call = false;
 
 						/* Remember we may need a procedure resource owner */
 						uplpgsql_curr_compile->requires_procedure_resowner = true;
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 
 					;}
     break;
 
   case 88:
-#line 991 "upl_gram.y"
+#line 999 "upl_gram.y"
     {
-						UPLpgSQL_stmt_assign *new;
+						UPLpgSQL_stmt_assign *newp;
 						RawParseMode pmode;
 
 						/* see how many names identify the datum */
@@ -3157,45 +3165,45 @@ yyreduce:
 								break;
 							default:
 								elog(ERROR, "unexpected number of names");
-								pmode = 0; /* keep compiler quiet */
+								pmode = (RawParseMode) 0; /* keep compiler quiet */
 						}
 
 						check_assignable((yyvsp[(1) - (1)].wdatum).datum, (yylsp[(1) - (1)]), yyscanner);
-						new = palloc0_object(UPLpgSQL_stmt_assign);
-						new->cmd_type = UPLPGSQL_STMT_ASSIGN;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->varno = (yyvsp[(1) - (1)].wdatum).datum->dno;
+						newp = palloc0_object(UPLpgSQL_stmt_assign);
+						newp->cmd_type = UPLPGSQL_STMT_ASSIGN;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->varno = (yyvsp[(1) - (1)].wdatum).datum->dno;
 						/* Push back the head name to include it in the stmt */
 						uplpgsql_push_back_token(T_DATUM, &yylval, &yylloc, yyscanner);
-						new->expr = read_sql_construct(';', 0, 0, ";",
+						newp->expr = read_sql_construct(';', 0, 0, ";",
 													   pmode,
 													   false, true,
 													   NULL, NULL,
 													   &yylval, &yylloc, yyscanner);
-						mark_expr_as_assignment_source(new->expr, (yyvsp[(1) - (1)].wdatum).datum);
+						mark_expr_as_assignment_source(newp->expr, (yyvsp[(1) - (1)].wdatum).datum);
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 89:
-#line 1032 "upl_gram.y"
+#line 1040 "upl_gram.y"
     {
-						UPLpgSQL_stmt_getdiag *new;
+						UPLpgSQL_stmt_getdiag *newp;
 						ListCell	   *lc;
 
-						new = palloc0_object(UPLpgSQL_stmt_getdiag);
-						new->cmd_type = UPLPGSQL_STMT_GETDIAG;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (5)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->is_stacked = (yyvsp[(2) - (5)].boolean);
-						new->diag_items = (yyvsp[(4) - (5)].list);
+						newp = palloc0_object(UPLpgSQL_stmt_getdiag);
+						newp->cmd_type = UPLPGSQL_STMT_GETDIAG;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (5)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->is_stacked = (yyvsp[(2) - (5)].boolean);
+						newp->diag_items = (yyvsp[(4) - (5)].list);
 
 						/*
 						 * Check information items are valid for area option.
 						 */
-						foreach(lc, new->diag_items)
+						foreach(lc, newp->diag_items)
 						{
 							UPLpgSQL_diag_item *ditem = (UPLpgSQL_diag_item *) lfirst(lc);
 
@@ -3204,7 +3212,7 @@ yyreduce:
 								/* these fields are disallowed in stacked case */
 								case UPLPGSQL_GETDIAG_ROW_COUNT:
 								case UPLPGSQL_GETDIAG_ROUTINE_OID:
-									if (new->is_stacked)
+									if (newp->is_stacked)
 										ereport(ERROR,
 												(errcode(ERRCODE_SYNTAX_ERROR),
 												 errmsg("diagnostics item %s is not allowed in GET STACKED DIAGNOSTICS",
@@ -3222,7 +3230,7 @@ yyreduce:
 								case UPLPGSQL_GETDIAG_MESSAGE_TEXT:
 								case UPLPGSQL_GETDIAG_TABLE_NAME:
 								case UPLPGSQL_GETDIAG_SCHEMA_NAME:
-									if (!new->is_stacked)
+									if (!newp->is_stacked)
 										ereport(ERROR,
 												(errcode(ERRCODE_SYNTAX_ERROR),
 												 errmsg("diagnostics item %s is not allowed in GET CURRENT DIAGNOSTICS",
@@ -3239,60 +3247,60 @@ yyreduce:
 							}
 						}
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 90:
-#line 1095 "upl_gram.y"
+#line 1103 "upl_gram.y"
     {
 						(yyval.boolean) = false;
 					;}
     break;
 
   case 91:
-#line 1099 "upl_gram.y"
+#line 1107 "upl_gram.y"
     {
 						(yyval.boolean) = false;
 					;}
     break;
 
   case 92:
-#line 1103 "upl_gram.y"
+#line 1111 "upl_gram.y"
     {
 						(yyval.boolean) = true;
 					;}
     break;
 
   case 93:
-#line 1109 "upl_gram.y"
+#line 1117 "upl_gram.y"
     {
 						(yyval.list) = lappend((yyvsp[(1) - (3)].list), (yyvsp[(3) - (3)].diagitem));
 					;}
     break;
 
   case 94:
-#line 1113 "upl_gram.y"
+#line 1121 "upl_gram.y"
     {
 						(yyval.list) = list_make1((yyvsp[(1) - (1)].diagitem));
 					;}
     break;
 
   case 95:
-#line 1119 "upl_gram.y"
+#line 1127 "upl_gram.y"
     {
-						UPLpgSQL_diag_item *new;
+						UPLpgSQL_diag_item *newp;
 
-						new = palloc_object(UPLpgSQL_diag_item);
-						new->target = (yyvsp[(1) - (3)].datum)->dno;
-						new->kind = (yyvsp[(3) - (3)].ival);
+						newp = palloc_object(UPLpgSQL_diag_item);
+						newp->target = (yyvsp[(1) - (3)].datum)->dno;
+						newp->kind = (UPLpgSQL_getdiag_kind) (yyvsp[(3) - (3)].ival);
 
-						(yyval.diagitem) = new;
+						(yyval.diagitem) = newp;
 					;}
     break;
 
   case 96:
-#line 1131 "upl_gram.y"
+#line 1139 "upl_gram.y"
     {
 						int			tok = yylex(&yylval, &yylloc, yyscanner);
 
@@ -3341,7 +3349,7 @@ yyreduce:
     break;
 
   case 97:
-#line 1179 "upl_gram.y"
+#line 1187 "upl_gram.y"
     {
 						/*
 						 * In principle we should support a getdiag_target
@@ -3362,7 +3370,7 @@ yyreduce:
     break;
 
   case 98:
-#line 1197 "upl_gram.y"
+#line 1205 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						word_is_not_variable(&((yyvsp[(1) - (1)].word)), (yylsp[(1) - (1)]), yyscanner);
@@ -3370,7 +3378,7 @@ yyreduce:
     break;
 
   case 99:
-#line 1202 "upl_gram.y"
+#line 1210 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						cword_is_not_variable(&((yyvsp[(1) - (1)].cword)), (yylsp[(1) - (1)]), yyscanner);
@@ -3378,67 +3386,67 @@ yyreduce:
     break;
 
   case 100:
-#line 1209 "upl_gram.y"
+#line 1217 "upl_gram.y"
     {
-						UPLpgSQL_stmt_if *new;
+						UPLpgSQL_stmt_if *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_if);
-						new->cmd_type = UPLPGSQL_STMT_IF;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (8)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->cond = (yyvsp[(2) - (8)].expr);
-						new->then_body = (yyvsp[(3) - (8)].list);
-						new->elsif_list = (yyvsp[(4) - (8)].list);
-						new->else_body = (yyvsp[(5) - (8)].list);
+						newp = palloc0_object(UPLpgSQL_stmt_if);
+						newp->cmd_type = UPLPGSQL_STMT_IF;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (8)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->cond = (yyvsp[(2) - (8)].expr);
+						newp->then_body = (yyvsp[(3) - (8)].list);
+						newp->elsif_list = (yyvsp[(4) - (8)].list);
+						newp->else_body = (yyvsp[(5) - (8)].list);
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 101:
-#line 1226 "upl_gram.y"
+#line 1234 "upl_gram.y"
     {
 						(yyval.list) = NIL;
 					;}
     break;
 
   case 102:
-#line 1230 "upl_gram.y"
+#line 1238 "upl_gram.y"
     {
-						UPLpgSQL_if_elsif *new;
+						UPLpgSQL_if_elsif *newp;
 
-						new = palloc0_object(UPLpgSQL_if_elsif);
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
-						new->cond = (yyvsp[(3) - (4)].expr);
-						new->stmts = (yyvsp[(4) - (4)].list);
+						newp = palloc0_object(UPLpgSQL_if_elsif);
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
+						newp->cond = (yyvsp[(3) - (4)].expr);
+						newp->stmts = (yyvsp[(4) - (4)].list);
 
-						(yyval.list) = lappend((yyvsp[(1) - (4)].list), new);
+						(yyval.list) = lappend((yyvsp[(1) - (4)].list), newp);
 					;}
     break;
 
   case 103:
-#line 1243 "upl_gram.y"
+#line 1251 "upl_gram.y"
     {
 						(yyval.list) = NIL;
 					;}
     break;
 
   case 104:
-#line 1247 "upl_gram.y"
+#line 1255 "upl_gram.y"
     {
 						(yyval.list) = (yyvsp[(2) - (2)].list);
 					;}
     break;
 
   case 105:
-#line 1253 "upl_gram.y"
+#line 1261 "upl_gram.y"
     {
 						(yyval.stmt) = make_case((yylsp[(1) - (7)]), (yyvsp[(2) - (7)].expr), (yyvsp[(3) - (7)].list), (yyvsp[(4) - (7)].list), yyscanner);
 					;}
     break;
 
   case 106:
-#line 1259 "upl_gram.y"
+#line 1267 "upl_gram.y"
     {
 						UPLpgSQL_expr *expr = NULL;
 						int			tok = yylex(&yylval, &yylloc, yyscanner);
@@ -3454,40 +3462,40 @@ yyreduce:
     break;
 
   case 107:
-#line 1274 "upl_gram.y"
+#line 1282 "upl_gram.y"
     {
 						(yyval.list) = lappend((yyvsp[(1) - (2)].list), (yyvsp[(2) - (2)].casewhen));
 					;}
     break;
 
   case 108:
-#line 1278 "upl_gram.y"
+#line 1286 "upl_gram.y"
     {
 						(yyval.list) = list_make1((yyvsp[(1) - (1)].casewhen));
 					;}
     break;
 
   case 109:
-#line 1284 "upl_gram.y"
+#line 1292 "upl_gram.y"
     {
-						UPLpgSQL_case_when *new = palloc_object(UPLpgSQL_case_when);
+						UPLpgSQL_case_when *newp = palloc_object(UPLpgSQL_case_when);
 
-						new->lineno	= uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
-						new->expr = (yyvsp[(2) - (3)].expr);
-						new->stmts = (yyvsp[(3) - (3)].list);
-						(yyval.casewhen) = new;
+						newp->lineno	= uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
+						newp->expr = (yyvsp[(2) - (3)].expr);
+						newp->stmts = (yyvsp[(3) - (3)].list);
+						(yyval.casewhen) = newp;
 					;}
     break;
 
   case 110:
-#line 1295 "upl_gram.y"
+#line 1303 "upl_gram.y"
     {
 						(yyval.list) = NIL;
 					;}
     break;
 
   case 111:
-#line 1299 "upl_gram.y"
+#line 1307 "upl_gram.y"
     {
 						/*
 						 * proc_sect could return an empty list, but we
@@ -3503,72 +3511,72 @@ yyreduce:
     break;
 
   case 112:
-#line 1314 "upl_gram.y"
+#line 1322 "upl_gram.y"
     {
-						UPLpgSQL_stmt_loop *new;
+						UPLpgSQL_stmt_loop *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_loop);
-						new->cmd_type = UPLPGSQL_STMT_LOOP;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (3)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->label = (yyvsp[(1) - (3)].str);
-						new->body = (yyvsp[(3) - (3)].loop_body).stmts;
+						newp = palloc0_object(UPLpgSQL_stmt_loop);
+						newp->cmd_type = UPLPGSQL_STMT_LOOP;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (3)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->label = (yyvsp[(1) - (3)].str);
+						newp->body = (yyvsp[(3) - (3)].loop_body).stmts;
 
 						check_labels((yyvsp[(1) - (3)].str), (yyvsp[(3) - (3)].loop_body).end_label, (yyvsp[(3) - (3)].loop_body).end_label_location, yyscanner);
 						uplpgsql_ns_pop();
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 113:
-#line 1332 "upl_gram.y"
+#line 1340 "upl_gram.y"
     {
-						UPLpgSQL_stmt_while *new;
+						UPLpgSQL_stmt_while *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_while);
-						new->cmd_type = UPLPGSQL_STMT_WHILE;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
-						new->stmtid	= ++uplpgsql_curr_compile->nstatements;
-						new->label = (yyvsp[(1) - (4)].str);
-						new->cond = (yyvsp[(3) - (4)].expr);
-						new->body = (yyvsp[(4) - (4)].loop_body).stmts;
-						new->test_at_top = true;
+						newp = palloc0_object(UPLpgSQL_stmt_while);
+						newp->cmd_type = UPLPGSQL_STMT_WHILE;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
+						newp->stmtid	= ++uplpgsql_curr_compile->nstatements;
+						newp->label = (yyvsp[(1) - (4)].str);
+						newp->cond = (yyvsp[(3) - (4)].expr);
+						newp->body = (yyvsp[(4) - (4)].loop_body).stmts;
+						newp->test_at_top = true;
 
 						check_labels((yyvsp[(1) - (4)].str), (yyvsp[(4) - (4)].loop_body).end_label, (yyvsp[(4) - (4)].loop_body).end_label_location, yyscanner);
 						uplpgsql_ns_pop();
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 114:
-#line 1352 "upl_gram.y"
+#line 1360 "upl_gram.y"
     {
 						/* This runs after we've scanned the loop body */
 						if ((yyvsp[(3) - (4)].stmt)->cmd_type == UPLPGSQL_STMT_FORI)
 						{
-							UPLpgSQL_stmt_fori *new;
+							UPLpgSQL_stmt_fori *newp;
 
-							new = (UPLpgSQL_stmt_fori *) (yyvsp[(3) - (4)].stmt);
-							new->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
-							new->label = (yyvsp[(1) - (4)].str);
-							new->body = (yyvsp[(4) - (4)].loop_body).stmts;
-							(yyval.stmt) = (UPLpgSQL_stmt *) new;
+							newp = (UPLpgSQL_stmt_fori *) (yyvsp[(3) - (4)].stmt);
+							newp->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
+							newp->label = (yyvsp[(1) - (4)].str);
+							newp->body = (yyvsp[(4) - (4)].loop_body).stmts;
+							(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 						}
 						else
 						{
-							UPLpgSQL_stmt_forq *new;
+							UPLpgSQL_stmt_forq *newp;
 
 							Assert((yyvsp[(3) - (4)].stmt)->cmd_type == UPLPGSQL_STMT_FORS ||
 								   (yyvsp[(3) - (4)].stmt)->cmd_type == UPLPGSQL_STMT_FORC ||
 								   (yyvsp[(3) - (4)].stmt)->cmd_type == UPLPGSQL_STMT_DYNFORS);
 							/* forq is the common supertype of all three */
-							new = (UPLpgSQL_stmt_forq *) (yyvsp[(3) - (4)].stmt);
-							new->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
-							new->label = (yyvsp[(1) - (4)].str);
-							new->body = (yyvsp[(4) - (4)].loop_body).stmts;
-							(yyval.stmt) = (UPLpgSQL_stmt *) new;
+							newp = (UPLpgSQL_stmt_forq *) (yyvsp[(3) - (4)].stmt);
+							newp->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (4)]), yyscanner);
+							newp->label = (yyvsp[(1) - (4)].str);
+							newp->body = (yyvsp[(4) - (4)].loop_body).stmts;
+							(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 						}
 
 						check_labels((yyvsp[(1) - (4)].str), (yyvsp[(4) - (4)].loop_body).end_label, (yyvsp[(4) - (4)].loop_body).end_label_location, yyscanner);
@@ -3578,7 +3586,7 @@ yyreduce:
     break;
 
   case 115:
-#line 1386 "upl_gram.y"
+#line 1394 "upl_gram.y"
     {
 						int			tok = yylex(&yylval, &yylloc, yyscanner);
 						int			tokloc = yylloc;
@@ -3587,7 +3595,7 @@ yyreduce:
 										   K_EXECUTE, "execute"))
 						{
 							/* EXECUTE means it's a dynamic FOR loop */
-							UPLpgSQL_stmt_dynfors *new;
+							UPLpgSQL_stmt_dynfors *newp;
 							UPLpgSQL_expr *expr;
 							int			term;
 
@@ -3595,18 +3603,18 @@ yyreduce:
 														"LOOP or USING",
 														&term, &yylval, &yylloc, yyscanner);
 
-							new = palloc0_object(UPLpgSQL_stmt_dynfors);
-							new->cmd_type = UPLPGSQL_STMT_DYNFORS;
-							new->stmtid = ++uplpgsql_curr_compile->nstatements;
+							newp = palloc0_object(UPLpgSQL_stmt_dynfors);
+							newp->cmd_type = UPLPGSQL_STMT_DYNFORS;
+							newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 							if ((yyvsp[(1) - (2)].forvariable).row)
 							{
-								new->var = (UPLpgSQL_variable *) (yyvsp[(1) - (2)].forvariable).row;
+								newp->var = (UPLpgSQL_variable *) (yyvsp[(1) - (2)].forvariable).row;
 								check_assignable((yyvsp[(1) - (2)].forvariable).row, (yylsp[(1) - (2)]), yyscanner);
 							}
 							else if ((yyvsp[(1) - (2)].forvariable).scalar)
 							{
 								/* convert single scalar to list */
-								new->var = (UPLpgSQL_variable *)
+								newp->var = (UPLpgSQL_variable *)
 									make_scalar_list1((yyvsp[(1) - (2)].forvariable).name, (yyvsp[(1) - (2)].forvariable).scalar,
 													  (yyvsp[(1) - (2)].forvariable).lineno, (yylsp[(1) - (2)]), yyscanner);
 								/* make_scalar_list1 did check_assignable */
@@ -3618,7 +3626,7 @@ yyreduce:
 										 errmsg("loop variable of loop over rows must be a record variable or list of scalar variables"),
 										 parser_errposition((yylsp[(1) - (2)]))));
 							}
-							new->query = expr;
+							newp->query = expr;
 
 							if (term == K_USING)
 							{
@@ -3627,24 +3635,24 @@ yyreduce:
 									expr = read_sql_expression2(',', K_LOOP,
 																", or LOOP",
 																&term, &yylval, &yylloc, yyscanner);
-									new->params = lappend(new->params, expr);
+									newp->params = lappend(newp->params, expr);
 								} while (term == ',');
 							}
 
-							(yyval.stmt) = (UPLpgSQL_stmt *) new;
+							(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 						}
 						else if (tok == T_DATUM &&
 								 yylval.wdatum.datum->dtype == UPLPGSQL_DTYPE_VAR &&
 								 ((UPLpgSQL_var *) yylval.wdatum.datum)->datatype->typoid == REFCURSOROID)
 						{
 							/* It's FOR var IN cursor */
-							UPLpgSQL_stmt_forc *new;
+							UPLpgSQL_stmt_forc *newp;
 							UPLpgSQL_var	*cursor = (UPLpgSQL_var *) yylval.wdatum.datum;
 
-							new = palloc0_object(UPLpgSQL_stmt_forc);
-							new->cmd_type = UPLPGSQL_STMT_FORC;
-							new->stmtid = ++uplpgsql_curr_compile->nstatements;
-							new->curvar = cursor->dno;
+							newp = palloc0_object(UPLpgSQL_stmt_forc);
+							newp->cmd_type = UPLPGSQL_STMT_FORC;
+							newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+							newp->curvar = cursor->dno;
 
 							/* Should have had a single variable name */
 							if ((yyvsp[(1) - (2)].forvariable).scalar && (yyvsp[(1) - (2)].forvariable).row)
@@ -3661,17 +3669,17 @@ yyreduce:
 										 parser_errposition(tokloc)));
 
 							/* collect cursor's parameters if any */
-							new->argquery = read_cursor_args(cursor, K_LOOP, &yylval, &yylloc, yyscanner);
+							newp->argquery = read_cursor_args(cursor, K_LOOP, &yylval, &yylloc, yyscanner);
 
 							/* create loop's private RECORD variable */
-							new->var = (UPLpgSQL_variable *)
+							newp->var = (UPLpgSQL_variable *)
 								uplpgsql_build_record((yyvsp[(1) - (2)].forvariable).name,
 													 (yyvsp[(1) - (2)].forvariable).lineno,
 													 NULL,
 													 RECORDOID,
 													 true);
 
-							(yyval.stmt) = (UPLpgSQL_stmt *) new;
+							(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 						}
 						else
 						{
@@ -3721,7 +3729,7 @@ yyreduce:
 								UPLpgSQL_expr *expr2;
 								UPLpgSQL_expr *expr_by;
 								UPLpgSQL_var	*fvar;
-								UPLpgSQL_stmt_fori *new;
+								UPLpgSQL_stmt_fori *newp;
 
 								/*
 								 * Relabel first expression as an expression;
@@ -3760,23 +3768,23 @@ yyreduce:
 																				  NULL),
 														   true);
 
-								new = palloc0_object(UPLpgSQL_stmt_fori);
-								new->cmd_type = UPLPGSQL_STMT_FORI;
-								new->stmtid	= ++uplpgsql_curr_compile->nstatements;
-								new->var = fvar;
-								new->reverse = reverse;
-								new->lower = expr1;
-								new->upper = expr2;
-								new->step = expr_by;
+								newp = palloc0_object(UPLpgSQL_stmt_fori);
+								newp->cmd_type = UPLPGSQL_STMT_FORI;
+								newp->stmtid	= ++uplpgsql_curr_compile->nstatements;
+								newp->var = fvar;
+								newp->reverse = reverse;
+								newp->lower = expr1;
+								newp->upper = expr2;
+								newp->step = expr_by;
 
-								(yyval.stmt) = (UPLpgSQL_stmt *) new;
+								(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 							}
 							else
 							{
 								/*
 								 * No "..", so it must be a query loop.
 								 */
-								UPLpgSQL_stmt_fors *new;
+								UPLpgSQL_stmt_fors *newp;
 
 								if (reverse)
 									ereport(ERROR,
@@ -3788,18 +3796,18 @@ yyreduce:
 								check_sql_expr(expr1->query, expr1->parseMode,
 											   expr1loc, yyscanner);
 
-								new = palloc0_object(UPLpgSQL_stmt_fors);
-								new->cmd_type = UPLPGSQL_STMT_FORS;
-								new->stmtid = ++uplpgsql_curr_compile->nstatements;
+								newp = palloc0_object(UPLpgSQL_stmt_fors);
+								newp->cmd_type = UPLPGSQL_STMT_FORS;
+								newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 								if ((yyvsp[(1) - (2)].forvariable).row)
 								{
-									new->var = (UPLpgSQL_variable *) (yyvsp[(1) - (2)].forvariable).row;
+									newp->var = (UPLpgSQL_variable *) (yyvsp[(1) - (2)].forvariable).row;
 									check_assignable((yyvsp[(1) - (2)].forvariable).row, (yylsp[(1) - (2)]), yyscanner);
 								}
 								else if ((yyvsp[(1) - (2)].forvariable).scalar)
 								{
 									/* convert single scalar to list */
-									new->var = (UPLpgSQL_variable *)
+									newp->var = (UPLpgSQL_variable *)
 										make_scalar_list1((yyvsp[(1) - (2)].forvariable).name, (yyvsp[(1) - (2)].forvariable).scalar,
 														  (yyvsp[(1) - (2)].forvariable).lineno, (yylsp[(1) - (2)]), yyscanner);
 									/* make_scalar_list1 did check_assignable */
@@ -3812,15 +3820,15 @@ yyreduce:
 											 parser_errposition((yylsp[(1) - (2)]))));
 								}
 
-								new->query = expr1;
-								(yyval.stmt) = (UPLpgSQL_stmt *) new;
+								newp->query = expr1;
+								(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 							}
 						}
 					;}
     break;
 
   case 116:
-#line 1645 "upl_gram.y"
+#line 1653 "upl_gram.y"
     {
 						(yyval.forvariable).name = NameOfDatum(&((yyvsp[(1) - (1)].wdatum)));
 						(yyval.forvariable).lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
@@ -3851,7 +3859,7 @@ yyreduce:
     break;
 
   case 117:
-#line 1673 "upl_gram.y"
+#line 1681 "upl_gram.y"
     {
 						int			tok;
 
@@ -3868,7 +3876,7 @@ yyreduce:
     break;
 
   case 118:
-#line 1687 "upl_gram.y"
+#line 1695 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						cword_is_not_variable(&((yyvsp[(1) - (1)].cword)), (yylsp[(1) - (1)]), yyscanner);
@@ -3876,27 +3884,27 @@ yyreduce:
     break;
 
   case 119:
-#line 1694 "upl_gram.y"
+#line 1702 "upl_gram.y"
     {
-						UPLpgSQL_stmt_foreach_a *new;
+						UPLpgSQL_stmt_foreach_a *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_foreach_a);
-						new->cmd_type = UPLPGSQL_STMT_FOREACH_A;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (8)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->label = (yyvsp[(1) - (8)].str);
-						new->slice = (yyvsp[(4) - (8)].ival);
-						new->expr = (yyvsp[(7) - (8)].expr);
-						new->body = (yyvsp[(8) - (8)].loop_body).stmts;
+						newp = palloc0_object(UPLpgSQL_stmt_foreach_a);
+						newp->cmd_type = UPLPGSQL_STMT_FOREACH_A;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(2) - (8)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->label = (yyvsp[(1) - (8)].str);
+						newp->slice = (yyvsp[(4) - (8)].ival);
+						newp->expr = (yyvsp[(7) - (8)].expr);
+						newp->body = (yyvsp[(8) - (8)].loop_body).stmts;
 
 						if ((yyvsp[(3) - (8)].forvariable).row)
 						{
-							new->varno = (yyvsp[(3) - (8)].forvariable).row->dno;
+							newp->varno = (yyvsp[(3) - (8)].forvariable).row->dno;
 							check_assignable((yyvsp[(3) - (8)].forvariable).row, (yylsp[(3) - (8)]), yyscanner);
 						}
 						else if ((yyvsp[(3) - (8)].forvariable).scalar)
 						{
-							new->varno = (yyvsp[(3) - (8)].forvariable).scalar->dno;
+							newp->varno = (yyvsp[(3) - (8)].forvariable).scalar->dno;
 							check_assignable((yyvsp[(3) - (8)].forvariable).scalar, (yylsp[(3) - (8)]), yyscanner);
 						}
 						else
@@ -3910,36 +3918,36 @@ yyreduce:
 						check_labels((yyvsp[(1) - (8)].str), (yyvsp[(8) - (8)].loop_body).end_label, (yyvsp[(8) - (8)].loop_body).end_label_location, yyscanner);
 						uplpgsql_ns_pop();
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 120:
-#line 1732 "upl_gram.y"
+#line 1740 "upl_gram.y"
     {
 						(yyval.ival) = 0;
 					;}
     break;
 
   case 121:
-#line 1736 "upl_gram.y"
+#line 1744 "upl_gram.y"
     {
 						(yyval.ival) = (yyvsp[(2) - (2)].ival);
 					;}
     break;
 
   case 122:
-#line 1742 "upl_gram.y"
+#line 1750 "upl_gram.y"
     {
-						UPLpgSQL_stmt_exit *new;
+						UPLpgSQL_stmt_exit *newp;
 
-						new = palloc0_object(UPLpgSQL_stmt_exit);
-						new->cmd_type = UPLPGSQL_STMT_EXIT;
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->is_exit = (yyvsp[(1) - (3)].boolean);
-						new->lineno	= uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
-						new->label = (yyvsp[(2) - (3)].str);
-						new->cond = (yyvsp[(3) - (3)].expr);
+						newp = palloc0_object(UPLpgSQL_stmt_exit);
+						newp->cmd_type = UPLPGSQL_STMT_EXIT;
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->is_exit = (yyvsp[(1) - (3)].boolean);
+						newp->lineno	= uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
+						newp->label = (yyvsp[(2) - (3)].str);
+						newp->cond = (yyvsp[(3) - (3)].expr);
 
 						if ((yyvsp[(2) - (3)].str))
 						{
@@ -3955,7 +3963,7 @@ yyreduce:
 												(yyvsp[(2) - (3)].str)),
 										 parser_errposition((yylsp[(2) - (3)]))));
 							/* CONTINUE only allows loop labels */
-							if (label->itemno != UPLPGSQL_LABEL_LOOP && !new->is_exit)
+							if (label->itemno != UPLPGSQL_LABEL_LOOP && !newp->is_exit)
 								ereport(ERROR,
 										(errcode(ERRCODE_SYNTAX_ERROR),
 										 errmsg("block label \"%s\" cannot be used in CONTINUE",
@@ -3972,32 +3980,32 @@ yyreduce:
 							if (uplpgsql_ns_find_nearest_loop(uplpgsql_ns_top()) == NULL)
 								ereport(ERROR,
 										(errcode(ERRCODE_SYNTAX_ERROR),
-										 new->is_exit ?
+										 newp->is_exit ?
 										 errmsg("EXIT cannot be used outside a loop, unless it has a label") :
 										 errmsg("CONTINUE cannot be used outside a loop"),
 										 parser_errposition((yylsp[(1) - (3)]))));
 						}
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 123:
-#line 1795 "upl_gram.y"
+#line 1803 "upl_gram.y"
     {
 						(yyval.boolean) = true;
 					;}
     break;
 
   case 124:
-#line 1799 "upl_gram.y"
+#line 1807 "upl_gram.y"
     {
 						(yyval.boolean) = false;
 					;}
     break;
 
   case 125:
-#line 1805 "upl_gram.y"
+#line 1813 "upl_gram.y"
     {
 						int			tok;
 
@@ -4024,21 +4032,21 @@ yyreduce:
     break;
 
   case 126:
-#line 1831 "upl_gram.y"
+#line 1839 "upl_gram.y"
     {
-						UPLpgSQL_stmt_raise *new;
+						UPLpgSQL_stmt_raise *newp;
 						int			tok;
 
-						new = palloc_object(UPLpgSQL_stmt_raise);
+						newp = palloc_object(UPLpgSQL_stmt_raise);
 
-						new->cmd_type = UPLPGSQL_STMT_RAISE;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid	= ++uplpgsql_curr_compile->nstatements;
-						new->elog_level = ERROR;	/* default */
-						new->condname = NULL;
-						new->message = NULL;
-						new->params = NIL;
-						new->options = NIL;
+						newp->cmd_type = UPLPGSQL_STMT_RAISE;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid	= ++uplpgsql_curr_compile->nstatements;
+						newp->elog_level = ERROR;	/* default */
+						newp->condname = NULL;
+						newp->message = NULL;
+						newp->params = NIL;
+						newp->options = NIL;
 
 						tok = yylex(&yylval, &yylloc, yyscanner);
 						if (tok == 0)
@@ -4056,37 +4064,37 @@ yyreduce:
 							if (tok_is_keyword(tok, &yylval,
 											   K_EXCEPTION, "exception"))
 							{
-								new->elog_level = ERROR;
+								newp->elog_level = ERROR;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 							else if (tok_is_keyword(tok, &yylval,
 													K_WARNING, "warning"))
 							{
-								new->elog_level = WARNING;
+								newp->elog_level = WARNING;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 							else if (tok_is_keyword(tok, &yylval,
 													K_NOTICE, "notice"))
 							{
-								new->elog_level = NOTICE;
+								newp->elog_level = NOTICE;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 							else if (tok_is_keyword(tok, &yylval,
 													K_INFO, "info"))
 							{
-								new->elog_level = INFO;
+								newp->elog_level = INFO;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 							else if (tok_is_keyword(tok, &yylval,
 													K_LOG, "log"))
 							{
-								new->elog_level = LOG;
+								newp->elog_level = LOG;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 							else if (tok_is_keyword(tok, &yylval,
 													K_DEBUG, "debug"))
 							{
-								new->elog_level = DEBUG1;
+								newp->elog_level = DEBUG1;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 							if (tok == 0)
@@ -4101,7 +4109,7 @@ yyreduce:
 							if (tok == SCONST)
 							{
 								/* old style message and parameters */
-								new->message = yylval.str;
+								newp->message = yylval.str;
 								/*
 								 * We expect either a semi-colon, which
 								 * indicates no parameters, or a comma that
@@ -4122,7 +4130,7 @@ yyreduce:
 															  true, true,
 															  NULL, &tok,
 															  &yylval, &yylloc, yyscanner);
-									new->params = lappend(new->params, expr);
+									newp->params = lappend(newp->params, expr);
 								}
 							}
 							else if (tok != K_USING)
@@ -4142,17 +4150,17 @@ yyreduce:
 										yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
 									if (strspn(sqlstatestr, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") != 5)
 										yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
-									new->condname = sqlstatestr;
+									newp->condname = sqlstatestr;
 								}
 								else
 								{
 									if (tok == T_WORD)
-										new->condname = yylval.word.ident;
+										newp->condname = yylval.word.ident;
 									else if (uplpgsql_token_is_unreserved_keyword(tok))
-										new->condname = pstrdup(yylval.keyword);
+										newp->condname = pstrdup(yylval.keyword);
 									else
 										yyerror(&yylloc, NULL, yyscanner, "syntax error");
-									uplpgsql_recognize_err_condition(new->condname,
+									uplpgsql_recognize_err_condition(newp->condname,
 																	false);
 								}
 								tok = yylex(&yylval, &yylloc, yyscanner);
@@ -4161,42 +4169,42 @@ yyreduce:
 							}
 
 							if (tok == K_USING)
-								new->options = read_raise_options(&yylval, &yylloc, yyscanner);
+								newp->options = read_raise_options(&yylval, &yylloc, yyscanner);
 						}
 
-						check_raise_parameters(new);
+						check_raise_parameters(newp);
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 127:
-#line 1977 "upl_gram.y"
+#line 1985 "upl_gram.y"
     {
-						UPLpgSQL_stmt_assert	*new;
+						UPLpgSQL_stmt_assert	*newp;
 						int			tok;
 
-						new = palloc_object(UPLpgSQL_stmt_assert);
+						newp = palloc_object(UPLpgSQL_stmt_assert);
 
-						new->cmd_type = UPLPGSQL_STMT_ASSERT;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->cmd_type = UPLPGSQL_STMT_ASSERT;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 
-						new->cond = read_sql_expression2(',', ';',
+						newp->cond = read_sql_expression2(',', ';',
 														 ", or ;",
 														 &tok, &yylval, &yylloc, yyscanner);
 
 						if (tok == ',')
-							new->message = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
+							newp->message = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner);
 						else
-							new->message = NULL;
+							newp->message = NULL;
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 128:
-#line 2001 "upl_gram.y"
+#line 2009 "upl_gram.y"
     {
 						(yyval.loop_body).stmts = (yyvsp[(1) - (5)].list);
 						(yyval.loop_body).end_label = (yyvsp[(4) - (5)].str);
@@ -4205,28 +4213,28 @@ yyreduce:
     break;
 
   case 129:
-#line 2019 "upl_gram.y"
+#line 2027 "upl_gram.y"
     {
 						(yyval.stmt) = make_execsql_stmt(K_IMPORT, (yylsp[(1) - (1)]), NULL, &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 130:
-#line 2023 "upl_gram.y"
+#line 2031 "upl_gram.y"
     {
 						(yyval.stmt) = make_execsql_stmt(K_INSERT, (yylsp[(1) - (1)]), NULL, &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 131:
-#line 2027 "upl_gram.y"
+#line 2035 "upl_gram.y"
     {
 						(yyval.stmt) = make_execsql_stmt(K_MERGE, (yylsp[(1) - (1)]), NULL, &yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 132:
-#line 2031 "upl_gram.y"
+#line 2039 "upl_gram.y"
     {
 						int			tok;
 
@@ -4240,7 +4248,7 @@ yyreduce:
     break;
 
   case 133:
-#line 2042 "upl_gram.y"
+#line 2050 "upl_gram.y"
     {
 						int			tok;
 
@@ -4254,9 +4262,9 @@ yyreduce:
     break;
 
   case 134:
-#line 2055 "upl_gram.y"
+#line 2063 "upl_gram.y"
     {
-						UPLpgSQL_stmt_dynexecute *new;
+						UPLpgSQL_stmt_dynexecute *newp;
 						UPLpgSQL_expr *expr;
 						int			endtoken;
 
@@ -4267,15 +4275,15 @@ yyreduce:
 												  NULL, &endtoken,
 												  &yylval, &yylloc, yyscanner);
 
-						new = palloc_object(UPLpgSQL_stmt_dynexecute);
-						new->cmd_type = UPLPGSQL_STMT_DYNEXECUTE;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->query = expr;
-						new->into = false;
-						new->strict = false;
-						new->target = NULL;
-						new->params = NIL;
+						newp = palloc_object(UPLpgSQL_stmt_dynexecute);
+						newp->cmd_type = UPLPGSQL_STMT_DYNEXECUTE;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->query = expr;
+						newp->into = false;
+						newp->strict = false;
+						newp->target = NULL;
+						newp->params = NIL;
 
 						/*
 						 * We loop to allow the INTO and USING clauses to
@@ -4288,15 +4296,15 @@ yyreduce:
 						{
 							if (endtoken == K_INTO)
 							{
-								if (new->into)			/* multiple INTO */
+								if (newp->into)			/* multiple INTO */
 									yyerror(&yylloc, NULL, yyscanner, "syntax error");
-								new->into = true;
-								read_into_target(&new->target, &new->strict, &yylval, &yylloc, yyscanner);
+								newp->into = true;
+								read_into_target(&newp->target, &newp->strict, &yylval, &yylloc, yyscanner);
 								endtoken = yylex(&yylval, &yylloc, yyscanner);
 							}
 							else if (endtoken == K_USING)
 							{
-								if (new->params)		/* multiple USING */
+								if (newp->params)		/* multiple USING */
 									yyerror(&yylloc, NULL, yyscanner, "syntax error");
 								do
 								{
@@ -4306,7 +4314,7 @@ yyreduce:
 															  true, true,
 															  NULL, &endtoken,
 															  &yylval, &yylloc, yyscanner);
-									new->params = lappend(new->params, expr);
+									newp->params = lappend(newp->params, expr);
 								} while (endtoken == ',');
 							}
 							else if (endtoken == ';')
@@ -4315,22 +4323,22 @@ yyreduce:
 								yyerror(&yylloc, NULL, yyscanner, "syntax error");
 						}
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 135:
-#line 2121 "upl_gram.y"
+#line 2129 "upl_gram.y"
     {
-						UPLpgSQL_stmt_open *new;
+						UPLpgSQL_stmt_open *newp;
 						int			tok;
 
-						new = palloc0_object(UPLpgSQL_stmt_open);
-						new->cmd_type = UPLPGSQL_STMT_OPEN;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (2)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->curvar = (yyvsp[(2) - (2)].var)->dno;
-						new->cursor_options = CURSOR_OPT_FAST_PLAN;
+						newp = palloc0_object(UPLpgSQL_stmt_open);
+						newp->cmd_type = UPLPGSQL_STMT_OPEN;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (2)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->curvar = (yyvsp[(2) - (2)].var)->dno;
+						newp->cursor_options = CURSOR_OPT_FAST_PLAN;
 
 						if ((yyvsp[(2) - (2)].var)->cursor_explicit_expr == NULL)
 						{
@@ -4343,14 +4351,14 @@ yyreduce:
 								if (tok_is_keyword(tok, &yylval,
 												   K_SCROLL, "scroll"))
 								{
-									new->cursor_options |= CURSOR_OPT_NO_SCROLL;
+									newp->cursor_options |= CURSOR_OPT_NO_SCROLL;
 									tok = yylex(&yylval, &yylloc, yyscanner);
 								}
 							}
 							else if (tok_is_keyword(tok, &yylval,
 													K_SCROLL, "scroll"))
 							{
-								new->cursor_options |= CURSOR_OPT_SCROLL;
+								newp->cursor_options |= CURSOR_OPT_SCROLL;
 								tok = yylex(&yylval, &yylloc, yyscanner);
 							}
 
@@ -4363,7 +4371,7 @@ yyreduce:
 							{
 								int			endtoken;
 
-								new->dynquery =
+								newp->dynquery =
 									read_sql_expression2(K_USING, ';',
 														 "USING or ;",
 														 &endtoken, &yylval, &yylloc, yyscanner);
@@ -4378,7 +4386,7 @@ yyreduce:
 										expr = read_sql_expression2(',', ';',
 																	", or ;",
 																	&endtoken, &yylval, &yylloc, yyscanner);
-										new->params = lappend(new->params,
+										newp->params = lappend(newp->params,
 															  expr);
 									} while (endtoken == ',');
 								}
@@ -4386,21 +4394,21 @@ yyreduce:
 							else
 							{
 								uplpgsql_push_back_token(tok, &yylval, &yylloc, yyscanner);
-								new->query = read_sql_stmt(&yylval, &yylloc, yyscanner);
+								newp->query = read_sql_stmt(&yylval, &yylloc, yyscanner);
 							}
 						}
 						else
 						{
 							/* predefined cursor query, so read args */
-							new->argquery = read_cursor_args((yyvsp[(2) - (2)].var), ';', &yylval, &yylloc, yyscanner);
+							newp->argquery = read_cursor_args((yyvsp[(2) - (2)].var), ';', &yylval, &yylloc, yyscanner);
 						}
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 136:
-#line 2200 "upl_gram.y"
+#line 2208 "upl_gram.y"
     {
 						UPLpgSQL_stmt_fetch *fetch = (yyvsp[(2) - (4)].fetch);
 						UPLpgSQL_variable *target;
@@ -4431,7 +4439,7 @@ yyreduce:
     break;
 
   case 137:
-#line 2230 "upl_gram.y"
+#line 2238 "upl_gram.y"
     {
 						UPLpgSQL_stmt_fetch *fetch = (yyvsp[(2) - (4)].fetch);
 
@@ -4444,29 +4452,29 @@ yyreduce:
     break;
 
   case 138:
-#line 2242 "upl_gram.y"
+#line 2250 "upl_gram.y"
     {
 						(yyval.fetch) = read_fetch_direction(&yylval, &yylloc, yyscanner);
 					;}
     break;
 
   case 139:
-#line 2248 "upl_gram.y"
+#line 2256 "upl_gram.y"
     {
-						UPLpgSQL_stmt_close *new;
+						UPLpgSQL_stmt_close *newp;
 
-						new = palloc_object(UPLpgSQL_stmt_close);
-						new->cmd_type = UPLPGSQL_STMT_CLOSE;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->curvar = (yyvsp[(2) - (3)].var)->dno;
+						newp = palloc_object(UPLpgSQL_stmt_close);
+						newp->cmd_type = UPLPGSQL_STMT_CLOSE;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->curvar = (yyvsp[(2) - (3)].var)->dno;
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 140:
-#line 2262 "upl_gram.y"
+#line 2270 "upl_gram.y"
     {
 						/* We do not bother building a node for NULL */
 						(yyval.stmt) = NULL;
@@ -4474,52 +4482,52 @@ yyreduce:
     break;
 
   case 141:
-#line 2269 "upl_gram.y"
+#line 2277 "upl_gram.y"
     {
-						UPLpgSQL_stmt_commit *new;
+						UPLpgSQL_stmt_commit *newp;
 
-						new = palloc_object(UPLpgSQL_stmt_commit);
-						new->cmd_type = UPLPGSQL_STMT_COMMIT;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->chain = (yyvsp[(2) - (3)].ival);
+						newp = palloc_object(UPLpgSQL_stmt_commit);
+						newp->cmd_type = UPLPGSQL_STMT_COMMIT;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->chain = (yyvsp[(2) - (3)].ival);
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 142:
-#line 2283 "upl_gram.y"
+#line 2291 "upl_gram.y"
     {
-						UPLpgSQL_stmt_rollback *new;
+						UPLpgSQL_stmt_rollback *newp;
 
-						new = palloc_object(UPLpgSQL_stmt_rollback);
-						new->cmd_type = UPLPGSQL_STMT_ROLLBACK;
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
-						new->stmtid = ++uplpgsql_curr_compile->nstatements;
-						new->chain = (yyvsp[(2) - (3)].ival);
+						newp = palloc_object(UPLpgSQL_stmt_rollback);
+						newp->cmd_type = UPLPGSQL_STMT_ROLLBACK;
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
+						newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+						newp->chain = (yyvsp[(2) - (3)].ival);
 
-						(yyval.stmt) = (UPLpgSQL_stmt *) new;
+						(yyval.stmt) = (UPLpgSQL_stmt *) newp;
 					;}
     break;
 
   case 143:
-#line 2297 "upl_gram.y"
+#line 2305 "upl_gram.y"
     { (yyval.ival) = true; ;}
     break;
 
   case 144:
-#line 2298 "upl_gram.y"
+#line 2306 "upl_gram.y"
     { (yyval.ival) = false; ;}
     break;
 
   case 145:
-#line 2299 "upl_gram.y"
+#line 2307 "upl_gram.y"
     { (yyval.ival) = false; ;}
     break;
 
   case 146:
-#line 2304 "upl_gram.y"
+#line 2312 "upl_gram.y"
     {
 						/*
 						 * In principle we should support a cursor_variable
@@ -4544,7 +4552,7 @@ yyreduce:
     break;
 
   case 147:
-#line 2326 "upl_gram.y"
+#line 2334 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						word_is_not_variable(&((yyvsp[(1) - (1)].word)), (yylsp[(1) - (1)]), yyscanner);
@@ -4552,7 +4560,7 @@ yyreduce:
     break;
 
   case 148:
-#line 2331 "upl_gram.y"
+#line 2339 "upl_gram.y"
     {
 						/* just to give a better message than "syntax error" */
 						cword_is_not_variable(&((yyvsp[(1) - (1)].cword)), (yylsp[(1) - (1)]), yyscanner);
@@ -4560,12 +4568,12 @@ yyreduce:
     break;
 
   case 149:
-#line 2338 "upl_gram.y"
+#line 2346 "upl_gram.y"
     { (yyval.exception_block) = NULL; ;}
     break;
 
   case 150:
-#line 2340 "upl_gram.y"
+#line 2348 "upl_gram.y"
     {
 						/*
 						 * We use a mid-rule action to add these
@@ -4575,7 +4583,7 @@ yyreduce:
 						 * current block.
 						 */
 						int			lineno = uplpgsql_location_to_lineno((yylsp[(1) - (1)]), yyscanner);
-						UPLpgSQL_exception_block *new = palloc_object(UPLpgSQL_exception_block);
+						UPLpgSQL_exception_block *newp = palloc_object(UPLpgSQL_exception_block);
 						UPLpgSQL_variable *var;
 
 						uplpgsql_curr_compile->has_exception_block = true;
@@ -4587,7 +4595,7 @@ yyreduce:
 																			NULL),
 													 true);
 						var->isconst = true;
-						new->sqlstate_varno = var->dno;
+						newp->sqlstate_varno = var->dno;
 
 						var = uplpgsql_build_variable("sqlerrm", lineno,
 													 uplpgsql_build_datatype(TEXTOID,
@@ -4596,52 +4604,52 @@ yyreduce:
 																			NULL),
 													 true);
 						var->isconst = true;
-						new->sqlerrm_varno = var->dno;
+						newp->sqlerrm_varno = var->dno;
 
-						(yyval.exception_block) = new;
+						(yyval.exception_block) = newp;
 					;}
     break;
 
   case 151:
-#line 2375 "upl_gram.y"
+#line 2383 "upl_gram.y"
     {
-						UPLpgSQL_exception_block *new = (yyvsp[(2) - (3)].exception_block);
-						new->exc_list = (yyvsp[(3) - (3)].list);
+						UPLpgSQL_exception_block *newp = (yyvsp[(2) - (3)].exception_block);
+						newp->exc_list = (yyvsp[(3) - (3)].list);
 
-						(yyval.exception_block) = new;
+						(yyval.exception_block) = newp;
 					;}
     break;
 
   case 152:
-#line 2384 "upl_gram.y"
+#line 2392 "upl_gram.y"
     {
 							(yyval.list) = lappend((yyvsp[(1) - (2)].list), (yyvsp[(2) - (2)].exception));
 						;}
     break;
 
   case 153:
-#line 2388 "upl_gram.y"
+#line 2396 "upl_gram.y"
     {
 							(yyval.list) = list_make1((yyvsp[(1) - (1)].exception));
 						;}
     break;
 
   case 154:
-#line 2394 "upl_gram.y"
+#line 2402 "upl_gram.y"
     {
-						UPLpgSQL_exception *new;
+						UPLpgSQL_exception *newp;
 
-						new = palloc0_object(UPLpgSQL_exception);
-						new->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (4)]), yyscanner);
-						new->conditions = (yyvsp[(2) - (4)].condition);
-						new->action = (yyvsp[(4) - (4)].list);
+						newp = palloc0_object(UPLpgSQL_exception);
+						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (4)]), yyscanner);
+						newp->conditions = (yyvsp[(2) - (4)].condition);
+						newp->action = (yyvsp[(4) - (4)].list);
 
-						(yyval.exception) = new;
+						(yyval.exception) = newp;
 					;}
     break;
 
   case 155:
-#line 2407 "upl_gram.y"
+#line 2415 "upl_gram.y"
     {
 							UPLpgSQL_condition	*old;
 
@@ -4653,14 +4661,14 @@ yyreduce:
     break;
 
   case 156:
-#line 2416 "upl_gram.y"
+#line 2424 "upl_gram.y"
     {
 							(yyval.condition) = (yyvsp[(1) - (1)].condition);
 						;}
     break;
 
   case 157:
-#line 2422 "upl_gram.y"
+#line 2430 "upl_gram.y"
     {
 							if (strcmp((yyvsp[(1) - (1)].str), "sqlstate") != 0)
 							{
@@ -4668,7 +4676,7 @@ yyreduce:
 							}
 							else
 							{
-								UPLpgSQL_condition *new;
+								UPLpgSQL_condition *newp;
 								char   *sqlstatestr;
 
 								/* next token should be a string literal */
@@ -4681,38 +4689,38 @@ yyreduce:
 								if (strspn(sqlstatestr, "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ") != 5)
 									yyerror(&yylloc, NULL, yyscanner, "invalid SQLSTATE code");
 
-								new = palloc_object(UPLpgSQL_condition);
-								new->sqlerrstate =
+								newp = palloc_object(UPLpgSQL_condition);
+								newp->sqlerrstate =
 									MAKE_SQLSTATE(sqlstatestr[0],
 												  sqlstatestr[1],
 												  sqlstatestr[2],
 												  sqlstatestr[3],
 												  sqlstatestr[4]);
-								new->condname = sqlstatestr;
-								new->next = NULL;
+								newp->condname = sqlstatestr;
+								newp->next = NULL;
 
-								(yyval.condition) = new;
+								(yyval.condition) = newp;
 							}
 						;}
     break;
 
   case 158:
-#line 2458 "upl_gram.y"
+#line 2466 "upl_gram.y"
     { (yyval.expr) = read_sql_expression(';', ";", &yylval, &yylloc, yyscanner); ;}
     break;
 
   case 159:
-#line 2462 "upl_gram.y"
+#line 2470 "upl_gram.y"
     { (yyval.expr) = read_sql_expression(K_THEN, "THEN", &yylval, &yylloc, yyscanner); ;}
     break;
 
   case 160:
-#line 2466 "upl_gram.y"
+#line 2474 "upl_gram.y"
     { (yyval.expr) = read_sql_expression(K_LOOP, "LOOP", &yylval, &yylloc, yyscanner); ;}
     break;
 
   case 161:
-#line 2470 "upl_gram.y"
+#line 2478 "upl_gram.y"
     {
 						uplpgsql_ns_push(NULL, UPLPGSQL_LABEL_BLOCK);
 						(yyval.str) = NULL;
@@ -4720,7 +4728,7 @@ yyreduce:
     break;
 
   case 162:
-#line 2475 "upl_gram.y"
+#line 2483 "upl_gram.y"
     {
 						uplpgsql_ns_push((yyvsp[(2) - (3)].str), UPLPGSQL_LABEL_BLOCK);
 						(yyval.str) = (yyvsp[(2) - (3)].str);
@@ -4728,7 +4736,7 @@ yyreduce:
     break;
 
   case 163:
-#line 2482 "upl_gram.y"
+#line 2490 "upl_gram.y"
     {
 						uplpgsql_ns_push(NULL, UPLPGSQL_LABEL_LOOP);
 						(yyval.str) = NULL;
@@ -4736,7 +4744,7 @@ yyreduce:
     break;
 
   case 164:
-#line 2487 "upl_gram.y"
+#line 2495 "upl_gram.y"
     {
 						uplpgsql_ns_push((yyvsp[(2) - (3)].str), UPLPGSQL_LABEL_LOOP);
 						(yyval.str) = (yyvsp[(2) - (3)].str);
@@ -4744,14 +4752,14 @@ yyreduce:
     break;
 
   case 165:
-#line 2494 "upl_gram.y"
+#line 2502 "upl_gram.y"
     {
 						(yyval.str) = NULL;
 					;}
     break;
 
   case 166:
-#line 2498 "upl_gram.y"
+#line 2506 "upl_gram.y"
     {
 						/* label validity will be checked by outer production */
 						(yyval.str) = (yyvsp[(1) - (1)].str);
@@ -4759,31 +4767,31 @@ yyreduce:
     break;
 
   case 167:
-#line 2505 "upl_gram.y"
+#line 2513 "upl_gram.y"
     { (yyval.expr) = NULL; ;}
     break;
 
   case 168:
-#line 2507 "upl_gram.y"
+#line 2515 "upl_gram.y"
     { (yyval.expr) = (yyvsp[(2) - (2)].expr); ;}
     break;
 
   case 169:
-#line 2514 "upl_gram.y"
+#line 2522 "upl_gram.y"
     {
 						(yyval.str) = (yyvsp[(1) - (1)].word).ident;
 					;}
     break;
 
   case 170:
-#line 2518 "upl_gram.y"
+#line 2526 "upl_gram.y"
     {
 						(yyval.str) = pstrdup((yyvsp[(1) - (1)].keyword));
 					;}
     break;
 
   case 171:
-#line 2522 "upl_gram.y"
+#line 2530 "upl_gram.y"
     {
 						if ((yyvsp[(1) - (1)].wdatum).ident == NULL) /* composite name not OK */
 							yyerror(&yylloc, NULL, yyscanner, "syntax error");
@@ -4793,7 +4801,7 @@ yyreduce:
 
 
 /* Line 1267 of yacc.c.  */
-#line 4797 "upl_gram.c"
+#line 4805 "upl_gram.c"
       default: break;
     }
   YY_SYMBOL_PRINT ("-> $$ =", yyr1[yyn], &yyval, &yyloc);
@@ -5013,7 +5021,7 @@ yyreturn:
 }
 
 
-#line 2616 "upl_gram.y"
+#line 2624 "upl_gram.y"
 
 
 /*
@@ -5778,14 +5786,14 @@ complete_direction(UPLpgSQL_stmt_fetch *fetch, bool *check_FROM, YYSTYPE *yylval
 static UPLpgSQL_stmt *
 make_return_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
 {
-	UPLpgSQL_stmt_return *new;
+	UPLpgSQL_stmt_return *newp;
 
-	new = palloc0_object(UPLpgSQL_stmt_return);
-	new->cmd_type = UPLPGSQL_STMT_RETURN;
-	new->lineno = uplpgsql_location_to_lineno(location, yyscanner);
-	new->stmtid = ++uplpgsql_curr_compile->nstatements;
-	new->expr = NULL;
-	new->retvarno = -1;
+	newp = palloc0_object(UPLpgSQL_stmt_return);
+	newp->cmd_type = UPLPGSQL_STMT_RETURN;
+	newp->lineno = uplpgsql_location_to_lineno(location, yyscanner);
+	newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+	newp->expr = NULL;
+	newp->retvarno = -1;
 
 	if (uplpgsql_curr_compile->fn_retset)
 	{
@@ -5819,7 +5827,7 @@ make_return_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yysc
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
 					 errmsg("RETURN cannot have a parameter in function with OUT parameters"),
 					 parser_errposition(*yyllocp)));
-		new->retvarno = uplpgsql_curr_compile->out_param_varno;
+		newp->retvarno = uplpgsql_curr_compile->out_param_varno;
 	}
 	else
 	{
@@ -5835,7 +5843,7 @@ make_return_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yysc
 			 yylvalp->wdatum.datum->dtype == UPLPGSQL_DTYPE_ROW ||
 			 yylvalp->wdatum.datum->dtype == UPLPGSQL_DTYPE_REC))
 		{
-			new->retvarno = yylvalp->wdatum.datum->dno;
+			newp->retvarno = yylvalp->wdatum.datum->dno;
 			/* eat the semicolon token that we only peeked at above */
 			tok = yylex(yylvalp, yyllocp, yyscanner);
 			Assert(tok == ';');
@@ -5849,18 +5857,18 @@ make_return_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yysc
 			 * else is a compile-time error.
 			 */
 			uplpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
-			new->expr = read_sql_expression(';', ";", yylvalp, yyllocp, yyscanner);
+			newp->expr = read_sql_expression(';', ";", yylvalp, yyllocp, yyscanner);
 		}
 	}
 
-	return (UPLpgSQL_stmt *) new;
+	return (UPLpgSQL_stmt *) newp;
 }
 
 
 static UPLpgSQL_stmt *
 make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
 {
-	UPLpgSQL_stmt_return_next *new;
+	UPLpgSQL_stmt_return_next *newp;
 
 	if (!uplpgsql_curr_compile->fn_retset)
 		ereport(ERROR,
@@ -5868,12 +5876,12 @@ make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t
 				 errmsg("cannot use RETURN NEXT in a non-SETOF function"),
 				 parser_errposition(location)));
 
-	new = palloc0_object(UPLpgSQL_stmt_return_next);
-	new->cmd_type = UPLPGSQL_STMT_RETURN_NEXT;
-	new->lineno = uplpgsql_location_to_lineno(location, yyscanner);
-	new->stmtid = ++uplpgsql_curr_compile->nstatements;
-	new->expr = NULL;
-	new->retvarno = -1;
+	newp = palloc0_object(UPLpgSQL_stmt_return_next);
+	newp->cmd_type = UPLPGSQL_STMT_RETURN_NEXT;
+	newp->lineno = uplpgsql_location_to_lineno(location, yyscanner);
+	newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+	newp->expr = NULL;
+	newp->retvarno = -1;
 
 	if (uplpgsql_curr_compile->out_param_varno >= 0)
 	{
@@ -5882,7 +5890,7 @@ make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
 					 errmsg("RETURN NEXT cannot have a parameter in function with OUT parameters"),
 					 parser_errposition(*yyllocp)));
-		new->retvarno = uplpgsql_curr_compile->out_param_varno;
+		newp->retvarno = uplpgsql_curr_compile->out_param_varno;
 	}
 	else
 	{
@@ -5898,7 +5906,7 @@ make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t
 			 yylvalp->wdatum.datum->dtype == UPLPGSQL_DTYPE_ROW ||
 			 yylvalp->wdatum.datum->dtype == UPLPGSQL_DTYPE_REC))
 		{
-			new->retvarno = yylvalp->wdatum.datum->dno;
+			newp->retvarno = yylvalp->wdatum.datum->dno;
 			/* eat the semicolon token that we only peeked at above */
 			tok = yylex(yylvalp, yyllocp, yyscanner);
 			Assert(tok == ';');
@@ -5912,18 +5920,18 @@ make_return_next_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t
 			 * else is a compile-time error.
 			 */
 			uplpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
-			new->expr = read_sql_expression(';', ";", yylvalp, yyllocp, yyscanner);
+			newp->expr = read_sql_expression(';', ";", yylvalp, yyllocp, yyscanner);
 		}
 	}
 
-	return (UPLpgSQL_stmt *) new;
+	return (UPLpgSQL_stmt *) newp;
 }
 
 
 static UPLpgSQL_stmt *
 make_return_query_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_t yyscanner)
 {
-	UPLpgSQL_stmt_return_query *new;
+	UPLpgSQL_stmt_return_query *newp;
 	int			tok;
 
 	if (!uplpgsql_curr_compile->fn_retset)
@@ -5932,10 +5940,10 @@ make_return_query_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_
 				 errmsg("cannot use RETURN QUERY in a non-SETOF function"),
 				 parser_errposition(location)));
 
-	new = palloc0_object(UPLpgSQL_stmt_return_query);
-	new->cmd_type = UPLPGSQL_STMT_RETURN_QUERY;
-	new->lineno = uplpgsql_location_to_lineno(location, yyscanner);
-	new->stmtid = ++uplpgsql_curr_compile->nstatements;
+	newp = palloc0_object(UPLpgSQL_stmt_return_query);
+	newp->cmd_type = UPLPGSQL_STMT_RETURN_QUERY;
+	newp->lineno = uplpgsql_location_to_lineno(location, yyscanner);
+	newp->stmtid = ++uplpgsql_curr_compile->nstatements;
 
 	/* check for RETURN QUERY EXECUTE */
 	tok = yylex(yylvalp, yyllocp, yyscanner);
@@ -5943,14 +5951,14 @@ make_return_query_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_
 	{
 		/* ordinary static query */
 		uplpgsql_push_back_token(tok, yylvalp, yyllocp, yyscanner);
-		new->query = read_sql_stmt(yylvalp, yyllocp, yyscanner);
+		newp->query = read_sql_stmt(yylvalp, yyllocp, yyscanner);
 	}
 	else
 	{
 		/* dynamic SQL */
 		int			term;
 
-		new->dynquery = read_sql_expression2(';', K_USING, "; or USING",
+		newp->dynquery = read_sql_expression2(';', K_USING, "; or USING",
 											 &term, yylvalp, yyllocp, yyscanner);
 		if (term == K_USING)
 		{
@@ -5959,12 +5967,12 @@ make_return_query_stmt(int location, YYSTYPE *yylvalp, YYLTYPE *yyllocp, yyscan_
 				UPLpgSQL_expr *expr;
 
 				expr = read_sql_expression2(',', ';', ", or ;", &term, yylvalp, yyllocp, yyscanner);
-				new->params = lappend(new->params, expr);
+				newp->params = lappend(newp->params, expr);
 			} while (term == ',');
 		}
 	}
 
-	return (UPLpgSQL_stmt *) new;
+	return (UPLpgSQL_stmt *) newp;
 }
 
 
@@ -6600,21 +6608,21 @@ static UPLpgSQL_stmt *
 make_case(int location, UPLpgSQL_expr *t_expr,
 		  List *case_when_list, List *else_stmts, yyscan_t yyscanner)
 {
-	UPLpgSQL_stmt_case *new;
+	UPLpgSQL_stmt_case *newp;
 
-	new = palloc_object(UPLpgSQL_stmt_case);
-	new->cmd_type = UPLPGSQL_STMT_CASE;
-	new->lineno = uplpgsql_location_to_lineno(location, yyscanner);
-	new->stmtid = ++uplpgsql_curr_compile->nstatements;
-	new->t_expr = t_expr;
-	new->t_varno = 0;
-	new->case_when_list = case_when_list;
-	new->have_else = (else_stmts != NIL);
+	newp = palloc_object(UPLpgSQL_stmt_case);
+	newp->cmd_type = UPLPGSQL_STMT_CASE;
+	newp->lineno = uplpgsql_location_to_lineno(location, yyscanner);
+	newp->stmtid = ++uplpgsql_curr_compile->nstatements;
+	newp->t_expr = t_expr;
+	newp->t_varno = 0;
+	newp->case_when_list = case_when_list;
+	newp->have_else = (else_stmts != NIL);
 	/* Get rid of list-with-NULL hack */
 	if (list_length(else_stmts) == 1 && linitial(else_stmts) == NULL)
-		new->else_stmts = NIL;
+		newp->else_stmts = NIL;
 	else
-		new->else_stmts = else_stmts;
+		newp->else_stmts = else_stmts;
 
 	/*
 	 * When test expression is present, we create a var for it and then
@@ -6639,13 +6647,13 @@ make_case(int location, UPLpgSQL_expr *t_expr,
 		 * variable as if it were INT4; we'll fix this at runtime if needed.
 		 */
 		t_var = (UPLpgSQL_var *)
-			uplpgsql_build_variable(varname, new->lineno,
+			uplpgsql_build_variable(varname, newp->lineno,
 								   uplpgsql_build_datatype(INT4OID,
 														  -1,
 														  InvalidOid,
 														  NULL),
 								   true);
-		new->t_varno = t_var->dno;
+		newp->t_varno = t_var->dno;
 
 		foreach(l, case_when_list)
 		{
@@ -6671,6 +6679,6 @@ make_case(int location, UPLpgSQL_expr *t_expr,
 		}
 	}
 
-	return (UPLpgSQL_stmt *) new;
+	return (UPLpgSQL_stmt *) newp;
 }
 

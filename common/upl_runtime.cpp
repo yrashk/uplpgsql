@@ -66,6 +66,10 @@
  */
 #include "upl_common.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "access/xact.h"
 #include "catalog/pg_type_d.h"
 #include "utils/array.h"
@@ -75,6 +79,10 @@
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
 #include "utils/portal.h"
+
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Per-cursor context for batch prefetching in FOR-query loops.
@@ -1525,12 +1533,12 @@ uplpgsql_rt_get_recfield(UPLpgSQL_exec_state *estate, int recfield_dno)
 {
 	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
 	UPLpgSQL_datum	   *datum = plstate->datums[recfield_dno];
-	Oid					typeid;
+	Oid					type_id;
 	int32				typetypmod;
 	Datum				value;
 	bool				isnull;
 
-	exec_eval_datum(plstate, datum, &typeid, &typetypmod, &value, &isnull);
+	exec_eval_datum(plstate, datum, &type_id, &typetypmod, &value, &isnull);
 
 	if (isnull)
 		return (Datum) 0;

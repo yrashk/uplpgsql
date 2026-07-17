@@ -30,6 +30,10 @@
  *-------------------------------------------------------------------------
  */
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "postgres.h"
 
 #include <ctype.h>
@@ -50,7 +54,17 @@
 #include "optimizer/optimizer.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_type.h"
+
+#ifdef __cplusplus
+}
+#endif
+
 #include "upl_common.h"
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "storage/proc.h"
 #include "tcop/cmdtag.h"
 #include "tcop/pquery.h"
@@ -64,6 +78,10 @@
 #include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
+
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * All plpgsql function executions within a single transaction share the same
@@ -386,7 +404,7 @@ void exec_assign_value(UPLpgSQL_execstate *estate,
 							  Oid valtype, int32 valtypmod);
 void exec_eval_datum(UPLpgSQL_execstate *estate,
 							UPLpgSQL_datum *datum,
-							Oid *typeid,
+							Oid *type_id,
 							int32 *typetypmod,
 							Datum *value,
 							bool *isnull);
@@ -1881,7 +1899,7 @@ copy_uplpgsql_datums(UPLpgSQL_execstate *estate,
 	 * To reduce palloc overhead, we make a single palloc request for all the
 	 * space needed for locally-instantiated datums.
 	 */
-	workspace = palloc(func->copiable_size);
+	workspace = (char *) palloc(func->copiable_size);
 	ws_next = workspace;
 
 	/* Fill datum-pointer array, copying datums into workspace as needed */
@@ -2942,7 +2960,7 @@ make_callstmt_target(UPLpgSQL_execstate *estate, UPLpgSQL_expr *expr)
 			(argmodes[i] == PROARGMODE_INOUT ||
 			 argmodes[i] == PROARGMODE_OUT))
 		{
-			Node	   *n = list_nth(stmt->outargs, nfields);
+			Node	   *n = (Node *) list_nth(stmt->outargs, nfields);
 
 			if (IsA(n, Param))
 			{
@@ -4678,13 +4696,13 @@ exec_stmt_assert(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_assert *stmt)
 		if (stmt->message != NULL)
 		{
 			Datum		val;
-			Oid			typeid;
+			Oid			type_id;
 			int32		typmod;
 
 			val = exec_eval_expr(estate, stmt->message,
-								 &isnull, &typeid, &typmod);
+								 &isnull, &type_id, &typmod);
 			if (!isnull)
-				message = convert_value_to_string(estate, val, typeid);
+				message = convert_value_to_string(estate, val, type_id);
 			/* we mustn't do exec_eval_cleanup here */
 		}
 
@@ -6025,7 +6043,7 @@ exec_assign_value(UPLpgSQL_execstate *estate,
 void
 exec_eval_datum(UPLpgSQL_execstate *estate,
 				UPLpgSQL_datum *datum,
-				Oid *typeid,
+				Oid *type_id,
 				int32 *typetypmod,
 				Datum *value,
 				bool *isnull)
@@ -6044,7 +6062,7 @@ exec_eval_datum(UPLpgSQL_execstate *estate,
 			{
 				UPLpgSQL_var *var = (UPLpgSQL_var *) datum;
 
-				*typeid = var->datatype->typoid;
+				*type_id = var->datatype->typoid;
 				*typetypmod = var->datatype->atttypmod;
 				*value = var->value;
 				*isnull = var->isnull;
@@ -6065,7 +6083,7 @@ exec_eval_datum(UPLpgSQL_execstate *estate,
 				tup = make_tuple_from_row(estate, row, row->rowtupdesc);
 				if (tup == NULL)	/* should not happen */
 					elog(ERROR, "row not compatible with its own tupdesc");
-				*typeid = row->rowtupdesc->tdtypeid;
+				*type_id = row->rowtupdesc->tdtypeid;
 				*typetypmod = row->rowtupdesc->tdtypmod;
 				*value = HeapTupleGetDatum(tup);
 				*isnull = false;
@@ -6083,7 +6101,7 @@ exec_eval_datum(UPLpgSQL_execstate *estate,
 					*value = (Datum) 0;
 					*isnull = true;
 					/* Report variable's declared type */
-					*typeid = rec->rectypeid;
+					*type_id = rec->rectypeid;
 					*typetypmod = -1;
 				}
 				else
@@ -6102,13 +6120,13 @@ exec_eval_datum(UPLpgSQL_execstate *estate,
 					if (rec->rectypeid != RECORDOID)
 					{
 						/* Report variable's declared type, if not RECORD */
-						*typeid = rec->rectypeid;
+						*type_id = rec->rectypeid;
 						*typetypmod = -1;
 					}
 					else
 					{
 						/* Report record's actual type if declared RECORD */
-						*typeid = rec->erh->er_typeid;
+						*type_id = rec->erh->er_typeid;
 						*typetypmod = rec->erh->er_typmod;
 					}
 				}
@@ -6152,7 +6170,7 @@ exec_eval_datum(UPLpgSQL_execstate *estate,
 				}
 
 				/* Report type data. */
-				*typeid = recfield->finfo.ftypeid;
+				*type_id = recfield->finfo.ftypeid;
 				*typetypmod = recfield->finfo.ftypmod;
 
 				/* And fetch the field value. */
@@ -6177,7 +6195,7 @@ Oid
 uplpgsql_exec_get_datum_type(UPLpgSQL_execstate *estate,
 							UPLpgSQL_datum *datum)
 {
-	Oid			typeid;
+	Oid			type_id;
 
 	switch (datum->dtype)
 	{
@@ -6186,7 +6204,7 @@ uplpgsql_exec_get_datum_type(UPLpgSQL_execstate *estate,
 			{
 				UPLpgSQL_var *var = (UPLpgSQL_var *) datum;
 
-				typeid = var->datatype->typoid;
+				type_id = var->datatype->typoid;
 				break;
 			}
 
@@ -6197,12 +6215,12 @@ uplpgsql_exec_get_datum_type(UPLpgSQL_execstate *estate,
 				if (rec->erh == NULL || rec->rectypeid != RECORDOID)
 				{
 					/* Report variable's declared type */
-					typeid = rec->rectypeid;
+					type_id = rec->rectypeid;
 				}
 				else
 				{
 					/* Report record's actual type if declared RECORD */
-					typeid = rec->erh->er_typeid;
+					type_id = rec->erh->er_typeid;
 				}
 				break;
 			}
@@ -6238,17 +6256,17 @@ uplpgsql_exec_get_datum_type(UPLpgSQL_execstate *estate,
 					recfield->rectupledescid = rec->erh->er_tupdesc_id;
 				}
 
-				typeid = recfield->finfo.ftypeid;
+				type_id = recfield->finfo.ftypeid;
 				break;
 			}
 
 		default:
 			elog(ERROR, "unrecognized dtype: %d", datum->dtype);
-			typeid = InvalidOid;	/* keep compiler quiet */
+			type_id = InvalidOid;	/* keep compiler quiet */
 			break;
 	}
 
-	return typeid;
+	return type_id;
 }
 
 /*
@@ -7694,7 +7712,7 @@ exec_move_row(UPLpgSQL_execstate *estate,
 		 *
 		 * The tests here are ordered more or less in order of cheapness.  We
 		 * can easily detect it will work if the target is declared RECORD or
-		 * has the same typeid as the source.  But when assigning from a query
+		 * has the same type_id as the source.  But when assigning from a query
 		 * result, it's common to have a source tupdesc that's labeled RECORD
 		 * but is actually physically compatible with a named-composite-type
 		 * target, so it's worth spending extra cycles to check for that.
@@ -7748,7 +7766,7 @@ exec_move_row(UPLpgSQL_execstate *estate,
 		{
 			char	   *chunk;
 
-			chunk = eval_mcontext_alloc(estate,
+			chunk = (char *) eval_mcontext_alloc(estate,
 										td_natts * (sizeof(Datum) + sizeof(bool)));
 			values = (Datum *) chunk;
 			nulls = (bool *) (chunk + td_natts * sizeof(Datum));
@@ -7980,7 +7998,7 @@ exec_move_row_from_fields(UPLpgSQL_execstate *estate,
 			{
 				char	   *chunk;
 
-				chunk = eval_mcontext_alloc(estate,
+				chunk = (char *) eval_mcontext_alloc(estate,
 											vtd_natts * (sizeof(Datum) + sizeof(bool)));
 				newvalues = (Datum *) chunk;
 				newnulls = (bool *) (chunk + vtd_natts * sizeof(Datum));

@@ -50,8 +50,14 @@
  */
 #include "upl.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "utils/hsearch.h"
 #include "utils/memutils.h"
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Sentinel value stored in jit_func to indicate the heuristic decided

@@ -33,6 +33,10 @@
 #ifndef UPL_PLPGSQL_H
 #define UPL_PLPGSQL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "access/xact.h"
 #include "commands/event_trigger.h"
 #include "commands/trigger.h"
@@ -1412,7 +1416,7 @@ extern void exec_assign_value(UPLpgSQL_execstate *estate,
 							  Oid valtype, int32 valtypmod);
 extern void exec_eval_datum(UPLpgSQL_execstate *estate,
 							UPLpgSQL_datum *datum,
-							Oid *typeid,
+							Oid *type_id,
 							int32 *typetypmod,
 							Datum *value,
 							bool *isnull);
@@ -1483,5 +1487,9 @@ extern bool exception_matches_conditions(ErrorData *edata,
 extern void uplpgsql_create_econtext(UPLpgSQL_execstate *estate);
 extern void assign_text_var(UPLpgSQL_execstate *estate, UPLpgSQL_var *var,
 							const char *str);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif							/* UPL_PLPGSQL_H */

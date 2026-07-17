@@ -37,7 +37,13 @@
  */
 #include "upl.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "miscadmin.h"
+#ifdef __cplusplus
+}
+#endif
 
 /*
  * Symbol name to emit for sigsetjmp.
@@ -84,7 +90,7 @@ upl_push_loop(UPL_compile_ctx *ctx, const char *label,
 			  LLVMBasicBlockRef continue_bb,
 			  LLVMBasicBlockRef exit_bb)
 {
-	UPL_loop_info *info = palloc(sizeof(UPL_loop_info));
+	UPL_loop_info *info = (UPL_loop_info *) palloc(sizeof(UPL_loop_info));
 
 	info->label = label;
 	info->is_loop = true;
@@ -107,7 +113,7 @@ void
 upl_push_block_label(UPL_compile_ctx *ctx, const char *label,
 					 LLVMBasicBlockRef exit_bb)
 {
-	UPL_loop_info *info = palloc(sizeof(UPL_loop_info));
+	UPL_loop_info *info = (UPL_loop_info *) palloc(sizeof(UPL_loop_info));
 
 	info->label = label;
 	info->is_loop = false;
@@ -180,7 +186,7 @@ void
 upl_push_cleanup(UPL_compile_ctx *ctx, int unwind_rt_fn,
 				 LLVMValueRef *args, int nargs)
 {
-	UPL_cleanup_info *cleanup = palloc(sizeof(UPL_cleanup_info));
+	UPL_cleanup_info *cleanup = (UPL_cleanup_info *) palloc(sizeof(UPL_cleanup_info));
 	int			i;
 
 	Assert(nargs >= 0 && nargs <= UPL_CLEANUP_MAX_ARGS);

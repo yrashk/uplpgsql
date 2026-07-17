@@ -44,10 +44,16 @@
 #ifndef UPL_H
 #define UPL_H
 
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include "postgres.h"
 #include "fmgr.h"
 #include "access/transam.h"
 #include "storage/itemptr.h"
+#ifdef __cplusplus
+}
+#endif
 
 #include <llvm-c/Core.h>
 #include <llvm-c/Analysis.h>
@@ -58,6 +64,10 @@
 #include <llvm-c/OrcEE.h>
 #include <llvm-c/TargetMachine.h>
 #include <llvm-c/Transforms/PassBuilder.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
 
 /*
  * Macro for functions that must be visible to OrcJIT's process symbol search.
@@ -593,5 +603,9 @@ upl_append_block(UPL_compile_ctx *ctx, const char *name)
 {
 	return LLVMAppendBasicBlockInContext(ctx->context, ctx->function, name);
 }
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif							/* UPL_H */
