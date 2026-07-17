@@ -8241,7 +8241,9 @@ private:
  * \file
  */
 
-#include <stack>
+#include <exception>
+#include <string>
+#include <string_view>
 
 extern "C" {
 #include <access/xact.h>
@@ -8285,42 +8287,86 @@ private:
 
 static_assert(sizeof(transaction_id) == sizeof(::TransactionId));
 
+/**
+ * @brief Internal subtransaction guard
+ *
+ * Begins an internal subtransaction on construction and finishes it exactly
+ * once. Subtransactions nest (as PL exception blocks do).
+ *
+ * If the scope is left because an exception is propagating, the
+ * subtransaction is rolled back; otherwise, at scope exit it is committed
+ * (default) or rolled back per the flag given at construction. Alternatively,
+ * it can be finished early by calling commit() or rollback() explicitly.
+ *
+ * `CurrentMemoryContext` and `CurrentResourceOwner` observed at construction
+ * are restored on every path.
+ */
 struct internal_subtransaction {
   internal_subtransaction(bool commit = true)
-      : owner(::CurrentResourceOwner), commit(commit), name("") {
-    if (txns.empty()) {
-      ffi_guard{::BeginInternalSubTransaction}(nullptr);
-      txns.push(this);
-    } else {
-      throw std::runtime_error("internal subtransaction already started");
-    }
+      : ctx(::CurrentMemoryContext), owner(::CurrentResourceOwner), should_commit(commit),
+        uncaught(std::uncaught_exceptions()), finished(false), name("") {
+    ffi_guard{::BeginInternalSubTransaction}(nullptr);
+    ::CurrentMemoryContext = ctx;
   }
 
   internal_subtransaction(std::string_view name, bool commit = true)
-      : owner(::CurrentResourceOwner), commit(commit), name(name) {
-    if (txns.empty()) {
-      ffi_guard{::BeginInternalSubTransaction}(this->name.c_str());
-      txns.push(this);
-    } else {
-      throw std::runtime_error("internal subtransaction already started");
-    }
+      : ctx(::CurrentMemoryContext), owner(::CurrentResourceOwner), should_commit(commit),
+        uncaught(std::uncaught_exceptions()), finished(false), name(name) {
+    ffi_guard{::BeginInternalSubTransaction}(this->name.c_str());
+    ::CurrentMemoryContext = ctx;
   }
 
-  ~internal_subtransaction() {
-    txns.pop();
-    if (commit) {
-      ffi_guard{::ReleaseCurrentSubTransaction}();
-    } else {
-      ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
+  internal_subtransaction(const internal_subtransaction &) = delete;
+  internal_subtransaction &operator=(const internal_subtransaction &) = delete;
+  internal_subtransaction(internal_subtransaction &&) = delete;
+  internal_subtransaction &operator=(internal_subtransaction &&) = delete;
+
+  /**
+   * @brief Commit the subtransaction now
+   */
+  void commit() {
+    ffi_guard{::ReleaseCurrentSubTransaction}();
+    restore();
+    finished = true;
+  }
+
+  /**
+   * @brief Roll the subtransaction back now
+   */
+  void rollback() {
+    ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
+    restore();
+    finished = true;
+  }
+
+  ~internal_subtransaction() noexcept {
+    if (finished) {
+      return;
     }
-    ::CurrentResourceOwner = owner;
+    try {
+      if (std::uncaught_exceptions() > uncaught || !should_commit) {
+        ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
+      } else {
+        ffi_guard{::ReleaseCurrentSubTransaction}();
+      }
+    } catch (...) {
+      elog(WARNING, "cppgres: finishing internal subtransaction failed");
+    }
+    restore();
   }
 
 private:
+  void restore() noexcept {
+    ::CurrentMemoryContext = ctx;
+    ::CurrentResourceOwner = owner;
+  }
+
+  ::MemoryContext ctx;
   ::ResourceOwner owner;
-  bool commit;
+  bool should_commit;
+  int uncaught;
+  bool finished;
   std::string name;
-  static inline std::stack<internal_subtransaction *> txns;
 };
 
 struct transaction {
@@ -10896,6 +10942,15 @@ concept a_vector = requires {
 } && std::same_as<T, std::vector<typename T::value_type, typename T::allocator_type>>;
 
 /**
+ * @brief SPI connection options
+ */
+enum class spi_opt : int { none = 0, nonatomic = SPI_OPT_NONATOMIC };
+
+constexpr spi_opt operator|(spi_opt lhs, spi_opt rhs) {
+  return static_cast<spi_opt>(static_cast<int>(lhs) | static_cast<int>(rhs));
+}
+
+/**
  * @brief [SPI](https://www.postgresql.org/docs/current/spi.html) executor API
  */
 struct spi_executor : public executor {
@@ -10903,6 +10958,16 @@ struct spi_executor : public executor {
    * @brief Creates an SPI executor
    */
   spi_executor() : spi_executor(0) {}
+
+  /**
+   * @brief Creates an SPI executor with explicitly chosen options
+   *
+   * This is meant for code running outside of the cppgres function-call
+   * context (such as raw language handlers) that determines atomicity by
+   * itself and therefore can't rely on @ref cppgres::spi_nonatomic_executor's
+   * context inference.
+   */
+  explicit spi_executor(spi_opt opts) : spi_executor(static_cast<int>(opts)) {}
   ~spi_executor() {
     ffi_guard{::SPI_finish}();
     executors.pop();
@@ -12897,6 +12962,132 @@ private:
 };
 
 #undef node_dispatch
+
+} // namespace cppgres
+/**
+ * \file
+ */
+
+
+extern "C" {
+#include <executor/executor.h>
+#include <utils/plancache.h>
+#include <utils/resowner.h>
+}
+
+namespace cppgres {
+
+/**
+ * @brief RAII-managed resource owner
+ *
+ * Creates a resource owner (`ResourceOwnerCreate`) on construction and, if
+ * still owning at destruction, releases the plan cache references it holds
+ * and deletes it. Ownership can be relinquished with release().
+ */
+struct resource_owner {
+  explicit resource_owner(const char *name, ::ResourceOwner parent = nullptr)
+      : owner(ffi_guard{::ResourceOwnerCreate}(parent, name)) {}
+
+  resource_owner(const resource_owner &) = delete;
+  resource_owner &operator=(const resource_owner &) = delete;
+
+  resource_owner(resource_owner &&other) noexcept : owner(other.owner) { other.owner = nullptr; }
+
+  resource_owner &operator=(resource_owner &&other) noexcept {
+    if (this != &other) {
+      dispose();
+      owner = other.owner;
+      other.owner = nullptr;
+    }
+    return *this;
+  }
+
+  operator ::ResourceOwner() const { return owner; }
+
+  /**
+   * @brief Disown the resource owner and return it
+   */
+  ::ResourceOwner release() noexcept {
+    ::ResourceOwner o = owner;
+    owner = nullptr;
+    return o;
+  }
+
+  ~resource_owner() noexcept { dispose(); }
+
+private:
+  void dispose() noexcept {
+    if (owner == nullptr) {
+      return;
+    }
+    try {
+      // Releasing plan cache references when there are none is harmless,
+      // so always do both.
+      ffi_guard{::ReleaseAllPlanCacheRefsInOwner}(owner);
+      ffi_guard{::ResourceOwnerDelete}(owner);
+    } catch (...) {
+      elog(WARNING, "cppgres: deleting resource owner failed");
+    }
+    owner = nullptr;
+  }
+
+  ::ResourceOwner owner;
+};
+
+/**
+ * @brief RAII-managed executor state (`EState`)
+ *
+ * Creates an executor state (`CreateExecutorState`) on construction and, if
+ * still owning at destruction, frees it. Ownership can be relinquished with
+ * release().
+ */
+struct executor_state {
+  executor_state() : estate(ffi_guard{::CreateExecutorState}()) {}
+
+  executor_state(const executor_state &) = delete;
+  executor_state &operator=(const executor_state &) = delete;
+
+  executor_state(executor_state &&other) noexcept : estate(other.estate) {
+    other.estate = nullptr;
+  }
+
+  executor_state &operator=(executor_state &&other) noexcept {
+    if (this != &other) {
+      dispose();
+      estate = other.estate;
+      other.estate = nullptr;
+    }
+    return *this;
+  }
+
+  operator ::EState *() const { return estate; }
+
+  /**
+   * @brief Disown the executor state and return it
+   */
+  ::EState *release() noexcept {
+    ::EState *e = estate;
+    estate = nullptr;
+    return e;
+  }
+
+  ~executor_state() noexcept { dispose(); }
+
+private:
+  void dispose() noexcept {
+    if (estate == nullptr) {
+      return;
+    }
+    try {
+      ffi_guard{::FreeExecutorState}(estate);
+    } catch (...) {
+      elog(WARNING, "cppgres: freeing executor state failed");
+    }
+    estate = nullptr;
+  }
+
+  ::EState *estate;
+};
 
 } // namespace cppgres
 /**

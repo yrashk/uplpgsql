@@ -73,6 +73,8 @@ extern "C" {
 
 }
 
+#include <optional>
+
 #include "cppgres.hpp"
 
 #include "upl_cache.hpp"
@@ -325,19 +327,6 @@ uplpgsql_extra_errors_assign_hook(const char *newvalue, void *extra)
 namespace uplpgsql {
 
 /*
- * SPI session for a handler invocation.
- *
- * cppgres::spi_executor's flag-taking constructor is protected (the public
- * types decide atomicity from cppgres function-call context, which a raw
- * language handler does not have), so expose it here: the handler computes
- * the flags from fcinfo itself.
- */
-struct spi_session : cppgres::spi_executor
-{
-	explicit spi_session(int flags) : cppgres::spi_executor(flags) {}
-};
-
-/*
  * Marks a compiled function busy for the duration of a call, saving and
  * restoring cur_estate — the RAII form of the old PG_FINALLY bookkeeping.
  */
@@ -361,47 +350,6 @@ struct function_busy_guard
 private:
 	UPLpgSQL_function *func_;
 	UPLpgSQL_execstate *save_cur_estate_;
-};
-
-/*
- * Procedure-lifespan resource owner for CALL/DO statements, released on
- * every exit path.  Since this resowner is not tied to any parent, failing
- * to free it would result in process-lifespan leaks — which is exactly why
- * it lives in a guard.
- */
-struct procedure_resowner_guard
-{
-	explicit procedure_resowner_guard(bool needed)
-		: resowner_(needed
-					? cppgres::ffi_guard{::ResourceOwnerCreate}(
-						  nullptr, "UPL/pgSQL procedure resources")
-					: nullptr)
-	{
-	}
-
-	~procedure_resowner_guard()
-	{
-		if (resowner_ == nullptr)
-			return;
-
-		try
-		{
-			cppgres::ffi_guard{::ReleaseAllPlanCacheRefsInOwner}(resowner_);
-			cppgres::ffi_guard{::ResourceOwnerDelete}(resowner_);
-		}
-		catch (...)
-		{
-			elog(WARNING, "uplpgsql: releasing procedure resource owner failed");
-		}
-	}
-
-	procedure_resowner_guard(const procedure_resowner_guard &) = delete;
-	procedure_resowner_guard &operator=(const procedure_resowner_guard &) = delete;
-
-	operator ResourceOwner() const { return resowner_; }
-
-private:
-	ResourceOwner resowner_;
 };
 
 /*
@@ -437,40 +385,22 @@ private:
 
 /*
  * Private EState and resource owner for a DO block's simple-expression
- * execution, released on every exit path.
+ * execution, released on every exit path.  estate_ is declared after
+ * resowner_ so it is destroyed first, preserving the teardown order
+ * (FreeExecutorState, then the resource owner).
  */
 struct simple_eval_resources
 {
-	simple_eval_resources()
-		: estate_(cppgres::ffi_guard{::CreateExecutorState}()),
-		  resowner_(cppgres::ffi_guard{::ResourceOwnerCreate}(
-			  nullptr, "UPL/pgSQL DO block simple expressions"))
-	{
-	}
-
-	~simple_eval_resources()
-	{
-		try
-		{
-			cppgres::ffi_guard{::FreeExecutorState}(estate_);
-			cppgres::ffi_guard{::ReleaseAllPlanCacheRefsInOwner}(resowner_);
-			cppgres::ffi_guard{::ResourceOwnerDelete}(resowner_);
-		}
-		catch (...)
-		{
-			elog(WARNING, "uplpgsql: releasing DO block resources failed");
-		}
-	}
-
 	simple_eval_resources(const simple_eval_resources &) = delete;
 	simple_eval_resources &operator=(const simple_eval_resources &) = delete;
+	simple_eval_resources() = default;
 
 	EState *estate() const { return estate_; }
 	ResourceOwner resowner() const { return resowner_; }
 
 private:
-	EState	   *estate_;
-	ResourceOwner resowner_;
+	cppgres::resource_owner resowner_{"UPL/pgSQL DO block simple expressions"};
+	cppgres::executor_state estate_;
 };
 
 /*
@@ -505,75 +435,6 @@ struct abort_callback_guard
 
 private:
 	int			entry_exceptions_;
-};
-
-/*
- * Subtransaction guard for the JIT-compile fallback: rolls back unless
- * commit() was called.
- *
- * cppgres::internal_subtransaction fixes its commit-or-rollback choice at
- * construction, but the fallback needs rollback-on-exception with
- * commit-on-success, so this guard makes the choice at scope exit.  It
- * mirrors the memory context and resource owner restoration of the C
- * version's BeginInternalSubTransaction / Release / RollbackAndRelease
- * sequence.
- */
-struct compile_subtransaction
-{
-	compile_subtransaction()
-		: oldcontext_(::CurrentMemoryContext),
-		  oldowner_(::CurrentResourceOwner)
-	{
-		cppgres::ffi_guard{::BeginInternalSubTransaction}(nullptr);
-		::CurrentMemoryContext = oldcontext_;
-	}
-
-	void
-	commit()
-	{
-		cppgres::ffi_guard{::ReleaseCurrentSubTransaction}();
-		restore();
-		committed_ = true;
-	}
-
-	~compile_subtransaction()
-	{
-		if (committed_)
-			return;
-
-		/*
-		 * Unwinding after a compilation error: the error state was already
-		 * captured and flushed by cppgres::pg_exception, so all that is left
-		 * is to roll the subtransaction back.  A destructor must not throw;
-		 * rollback failing is a can't-happen, but degrade to a warning
-		 * rather than std::terminate.
-		 */
-		try
-		{
-			::CurrentMemoryContext = oldcontext_;
-			cppgres::ffi_guard{::RollbackAndReleaseCurrentSubTransaction}();
-			restore();
-		}
-		catch (...)
-		{
-			elog(WARNING, "uplpgsql: rollback of JIT compile subtransaction failed");
-		}
-	}
-
-	compile_subtransaction(const compile_subtransaction &) = delete;
-	compile_subtransaction &operator=(const compile_subtransaction &) = delete;
-
-private:
-	void
-	restore()
-	{
-		::CurrentMemoryContext = oldcontext_;
-		::CurrentResourceOwner = oldowner_;
-	}
-
-	::MemoryContext oldcontext_;
-	::ResourceOwner oldowner_;
-	bool committed_ = false;
 };
 
 /*
@@ -635,7 +496,7 @@ jit_lookup_or_compile(UPLpgSQL_function *func)
 	 * leaked syscache references on every such function.
 	 *
 	 * cppgres::ffi_guard turns the error's longjmp into a pg_exception
-	 * (capturing and flushing the error state), the subtransaction guard
+	 * (capturing and flushing the error state), cppgres::internal_subtransaction
 	 * rolls back during unwind, and the catch block logs the cause.  We must
 	 * NOT report the error to the client: compilation failing is not a query
 	 * failure — execution continues under the interpreter — so it goes to
@@ -644,7 +505,7 @@ jit_lookup_or_compile(UPLpgSQL_function *func)
 	 */
 	try
 	{
-		compile_subtransaction subtx;
+		cppgres::internal_subtransaction subtx(false);
 		UPLpgSQL_func *jitfunc;
 
 		jitfunc = cppgres::ffi_guard{uplpgsql_compile_function}(func);
@@ -697,10 +558,15 @@ public:
 		: fcinfo_(fcinfo),
 		  nonatomic_(nonatomic),
 		  func_(cppgres::ffi_guard{uplpgsql_compile}(fcinfo, false)),
-		  busy_(func_),
-		  procedure_resowner_(nonatomic &&
-							  func_->requires_procedure_resowner)
+		  busy_(func_)
 	{
+		/*
+		 * The procedure-lifespan resource owner for CALL statements is not
+		 * tied to any parent (ResourceOwnerCreate's first argument), so
+		 * failing to free it would be a process-lifespan leak — hence RAII.
+		 */
+		if (nonatomic && func_->requires_procedure_resowner)
+			procedure_resowner_.emplace("UPL/pgSQL procedure resources");
 	}
 
 	Datum
@@ -728,12 +594,15 @@ public:
 																trigdata));
 		}
 
+		ResourceOwner procedure_resowner =
+			procedure_resowner_ ? (ResourceOwner) *procedure_resowner_ : nullptr;
+
 		return jit != nullptr
 			? cppgres::ffi_guard{uplpgsql_exec_function_jit}(
-				  func_, fcinfo_, nullptr, nullptr, procedure_resowner_,
+				  func_, fcinfo_, nullptr, nullptr, procedure_resowner,
 				  !nonatomic_, jit->jit_func)
 			: cppgres::ffi_guard{uplpgsql_exec_function}(
-				  func_, fcinfo_, nullptr, nullptr, procedure_resowner_,
+				  func_, fcinfo_, nullptr, nullptr, procedure_resowner,
 				  !nonatomic_);
 	}
 
@@ -745,7 +614,7 @@ private:
 	bool		nonatomic_;
 	UPLpgSQL_function *func_;
 	function_busy_guard busy_;
-	procedure_resowner_guard procedure_resowner_;
+	std::optional<cppgres::resource_owner> procedure_resowner_;
 };
 
 /*
@@ -836,7 +705,8 @@ uplpgsql_call_handler(PG_FUNCTION_ARGS)
 
 	try
 	{
-		uplpgsql::spi_session spi(nonatomic ? SPI_OPT_NONATOMIC : 0);
+		cppgres::spi_executor spi(nonatomic ? cppgres::spi_opt::nonatomic
+											: cppgres::spi_opt::none);
 		uplpgsql::call call(fcinfo, nonatomic);
 
 		retval = call.execute();
@@ -872,7 +742,8 @@ uplpgsql_inline_handler(PG_FUNCTION_ARGS)
 
 	try
 	{
-		uplpgsql::spi_session spi(codeblock->atomic ? 0 : SPI_OPT_NONATOMIC);
+		cppgres::spi_executor spi(codeblock->atomic ? cppgres::spi_opt::none
+													: cppgres::spi_opt::nonatomic);
 		uplpgsql::do_block block(codeblock);
 
 		retval = block.execute();
@@ -924,7 +795,7 @@ uplpgsql_validator(PG_FUNCTION_ARGS)
 			TriggerData trigdata;
 			EventTriggerData etrigdata;
 
-			uplpgsql::spi_session spi(0);
+			cppgres::spi_executor spi;
 
 			MemSet(fake_fcinfo, 0, SizeForFunctionCallInfo(0));
 			MemSet(&flinfo, 0, sizeof(flinfo));
