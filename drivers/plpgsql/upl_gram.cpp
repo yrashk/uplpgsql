@@ -2682,7 +2682,7 @@ yyreduce:
 
 						newp = palloc0_object(UPLpgSQL_row);
 						newp->dtype = UPLPGSQL_DTYPE_ROW;
-						newp->refname = "(unnamed row)";
+						newp->refname = unconstify(char *, "(unnamed row)");
 						newp->lineno = uplpgsql_location_to_lineno((yylsp[(1) - (3)]), yyscanner);
 						newp->rowtupdesc = NULL;
 						newp->nfields = list_length((yyvsp[(2) - (3)].list));
@@ -6136,7 +6136,7 @@ read_into_scalar_list(char *initial_name,
 
 	row = palloc0_object(UPLpgSQL_row);
 	row->dtype = UPLPGSQL_DTYPE_ROW;
-	row->refname = "(unnamed row)";
+	row->refname = unconstify(char *, "(unnamed row)");
 	row->lineno = uplpgsql_location_to_lineno(initial_location, yyscanner);
 	row->rowtupdesc = NULL;
 	row->nfields = nfields;
@@ -6171,7 +6171,7 @@ make_scalar_list1(char *initial_name,
 
 	row = palloc0_object(UPLpgSQL_row);
 	row->dtype = UPLPGSQL_DTYPE_ROW;
-	row->refname = "(unnamed row)";
+	row->refname = unconstify(char *, "(unnamed row)");
 	row->lineno = lineno;
 	row->rowtupdesc = NULL;
 	row->nfields = 1;
