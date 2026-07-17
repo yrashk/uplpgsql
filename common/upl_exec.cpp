@@ -83,6 +83,42 @@ extern "C" {
 }
 #endif
 
+#include "cppgres.hpp"
+
+namespace uplpgsql {
+/*
+ * Exception barrier for the exec_* functions whose addresses the JIT
+ * compiler embeds directly into generated code (see uplpgsql_call_exec()
+ * in upl_compile_stmts.cpp).  A C++ exception must never unwind into a
+ * JIT'd frame (no unwind info => std::terminate), so those functions are
+ * defined with function-try-blocks whose handlers call this: it converts
+ * the exception back to a Postgres error, i.e. a longjmp to whichever
+ * handler is armed (a JIT'd sigsetjmp frame, a cppgres::ffi_guard, or the
+ * top-level one).
+ */
+[[noreturn]] static inline void
+reraise_as_pg_error(std::exception_ptr ep)
+{
+	try
+	{
+		std::rethrow_exception(ep);
+	}
+	catch (cppgres::pg_exception &e)
+	{
+		e.rethrow();
+	}
+	catch (const std::exception &e)
+	{
+		cppgres::report(ERROR, "%s", e.what());
+	}
+	catch (...)
+	{
+		cppgres::report(ERROR, "unknown exception");
+	}
+	pg_unreachable();
+}
+} /* namespace uplpgsql */
+
 /*
  * All plpgsql function executions within a single transaction share the same
  * executor EState for evaluating "simple" expressions.  Each function call
@@ -732,7 +768,7 @@ uplpgsql_exec_function(UPLpgSQL_function *func, FunctionCallInfo fcinfo,
 				 * However, if we have a R/W expanded datum, we can just
 				 * transfer its ownership out to the upper context.
 				 */
-				estate.retval = SPI_datumTransfer(estate.retval,
+				estate.retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate.retval,
 												  false,
 												  -1);
 			}
@@ -772,7 +808,7 @@ uplpgsql_exec_function(UPLpgSQL_function *func, FunctionCallInfo fcinfo,
 						 * generic rowtype, so we don't really need to be
 						 * restrictive.  Pass back the generated result as-is.
 						 */
-						estate.retval = SPI_datumTransfer(estate.retval,
+						estate.retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate.retval,
 														  false,
 														  -1);
 						break;
@@ -801,7 +837,7 @@ uplpgsql_exec_function(UPLpgSQL_function *func, FunctionCallInfo fcinfo,
 			 * upper executor context.
 			 */
 			if (!fcinfo->isnull && !func->fn_retbyval)
-				estate.retval = SPI_datumTransfer(estate.retval,
+				estate.retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate.retval,
 												  false,
 												  func->fn_rettyplen);
 		}
@@ -1053,7 +1089,7 @@ uplpgsql_exec_function_jit(UPLpgSQL_function *func, FunctionCallInfo fcinfo,
 			if (func->fn_rettype == estate.rettype &&
 				func->fn_rettype != RECORDOID)
 			{
-				estate.retval = SPI_datumTransfer(estate.retval,
+				estate.retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate.retval,
 												  false,
 												  -1);
 			}
@@ -1073,7 +1109,7 @@ uplpgsql_exec_function_jit(UPLpgSQL_function *func, FunctionCallInfo fcinfo,
 									 NULL, NULL);
 						break;
 					case TYPEFUNC_RECORD:
-						estate.retval = SPI_datumTransfer(estate.retval,
+						estate.retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate.retval,
 														  false,
 														  -1);
 						break;
@@ -1094,7 +1130,7 @@ uplpgsql_exec_function_jit(UPLpgSQL_function *func, FunctionCallInfo fcinfo,
 											-1);
 
 			if (!fcinfo->isnull && !func->fn_retbyval)
-				estate.retval = SPI_datumTransfer(estate.retval,
+				estate.retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate.retval,
 												  false,
 												  func->fn_rettyplen);
 		}
@@ -1240,7 +1276,7 @@ uplpgsql_exec_trigger_jit(UPLpgSQL_function *func, TriggerData *trigdata,
 		elog(ERROR, "unrecognized trigger action: not INSERT, DELETE, or UPDATE");
 
 	/* Make transition tables visible to this SPI connection */
-	rc = SPI_register_trigger_data(trigdata);
+	rc = cppgres::ffi_guard{::SPI_register_trigger_data}(trigdata);
 	Assert(rc >= 0);
 
 	estate.err_text = gettext_noop("during function entry");
@@ -1339,7 +1375,7 @@ uplpgsql_exec_trigger_jit(UPLpgSQL_function *func, TriggerData *trigdata,
 			 */
 			if (rettup != trigdata->tg_newtuple &&
 				rettup != trigdata->tg_trigtuple)
-				rettup = SPI_copytuple(rettup);
+				rettup = cppgres::ffi_guard{::SPI_copytuple}(rettup);
 		}
 		else
 		{
@@ -1361,7 +1397,7 @@ uplpgsql_exec_trigger_jit(UPLpgSQL_function *func, TriggerData *trigdata,
 			/* no need to free map, we're about to return anyway */
 
 			/* Copy tuple to upper executor memory */
-			rettup = SPI_copytuple(rettup);
+			rettup = cppgres::ffi_guard{::SPI_copytuple}(rettup);
 		}
 	}
 
@@ -1431,7 +1467,7 @@ coerce_function_result_tuple(UPLpgSQL_execstate *estate, TupleDesc tupdesc)
 			 * Copy tuple to upper executor memory, as a tuple Datum.  Make
 			 * sure it is labeled with the caller-supplied tuple type.
 			 */
-			estate->retval = PointerGetDatum(SPI_returntuple(rettup, tupdesc));
+			estate->retval = PointerGetDatum(cppgres::ffi_guard{::SPI_returntuple}(rettup, tupdesc));
 			/* no need to free map, we're about to return anyway */
 		}
 		else if (!(tupdesc->tdtypeid == erh->er_decltypeid ||
@@ -1453,7 +1489,7 @@ coerce_function_result_tuple(UPLpgSQL_execstate *estate, TupleDesc tupdesc)
 			HeapTupleHeader tuphdr;
 
 			resultsize = EOH_get_flat_size(&erh->hdr);
-			tuphdr = (HeapTupleHeader) SPI_palloc(resultsize);
+			tuphdr = (HeapTupleHeader) cppgres::ffi_guard{::SPI_palloc}(resultsize);
 			EOH_flatten_into(&erh->hdr, tuphdr, resultsize);
 			HeapTupleHeaderSetTypeId(tuphdr, tupdesc->tdtypeid);
 			HeapTupleHeaderSetTypMod(tuphdr, tupdesc->tdtypmod);
@@ -1466,7 +1502,7 @@ coerce_function_result_tuple(UPLpgSQL_execstate *estate, TupleDesc tupdesc)
 			 * However, if we have a R/W expanded datum, we can just transfer
 			 * its ownership out to the upper executor context.
 			 */
-			estate->retval = SPI_datumTransfer(estate->retval,
+			estate->retval = cppgres::ffi_guard{::SPI_datumTransfer}(estate->retval,
 											   false,
 											   -1);
 		}
@@ -1492,7 +1528,7 @@ coerce_function_result_tuple(UPLpgSQL_execstate *estate, TupleDesc tupdesc)
 		 * Copy tuple to upper executor memory, as a tuple Datum.  Make sure
 		 * it is labeled with the caller-supplied tuple type.
 		 */
-		estate->retval = PointerGetDatum(SPI_returntuple(rettup, tupdesc));
+		estate->retval = PointerGetDatum(cppgres::ffi_guard{::SPI_returntuple}(rettup, tupdesc));
 
 		/* no need to free map, we're about to return anyway */
 
@@ -1605,7 +1641,7 @@ uplpgsql_exec_trigger(UPLpgSQL_function *func,
 		elog(ERROR, "unrecognized trigger action: not INSERT, DELETE, or UPDATE");
 
 	/* Make transition tables visible to this SPI connection */
-	rc = SPI_register_trigger_data(trigdata);
+	rc = cppgres::ffi_guard{::SPI_register_trigger_data}(trigdata);
 	Assert(rc >= 0);
 
 	estate.err_text = gettext_noop("during function entry");
@@ -1693,7 +1729,7 @@ uplpgsql_exec_trigger(UPLpgSQL_function *func,
 			 */
 			if (rettup != trigdata->tg_newtuple &&
 				rettup != trigdata->tg_trigtuple)
-				rettup = SPI_copytuple(rettup);
+				rettup = cppgres::ffi_guard{::SPI_copytuple}(rettup);
 		}
 		else
 		{
@@ -1715,7 +1751,7 @@ uplpgsql_exec_trigger(UPLpgSQL_function *func,
 			/* no need to free map, we're about to return anyway */
 
 			/* Copy tuple to upper executor memory */
-			rettup = SPI_copytuple(rettup);
+			rettup = cppgres::ffi_guard{::SPI_copytuple}(rettup);
 		}
 	}
 
@@ -2377,65 +2413,80 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 		/* Want to run statements inside function's memory context */
 		MemoryContextSwitchTo(oldcontext);
 
-		PG_TRY();
+		/*
+		 * Run the protected body under cppgres::ffi_guard, so that a
+		 * Postgres error's longjmp is converted into a thrown
+		 * cppgres::pg_exception at this level, while pg_exceptions already
+		 * thrown by converted callees below propagate through the guard
+		 * unchanged.  Both converge at the catch block, which plays the
+		 * role of the old PG_CATCH.
+		 */
+		try
 		{
-			/*
-			 * We need to run the block's statements with a new eval_econtext
-			 * that belongs to the current subtransaction; if we try to use
-			 * the outer econtext then ExprContext shutdown callbacks will be
-			 * called at the wrong times.
-			 */
-			uplpgsql_create_econtext(estate);
+			cppgres::ffi_guard{[&]() {
+				/*
+				 * We need to run the block's statements with a new eval_econtext
+				 * that belongs to the current subtransaction; if we try to use
+				 * the outer econtext then ExprContext shutdown callbacks will be
+				 * called at the wrong times.
+				 */
+				uplpgsql_create_econtext(estate);
 
-			estate->err_text = NULL;
+				estate->err_text = NULL;
 
-			/* Run the block's statements */
-			rc = exec_stmts(estate, block->body);
+				/* Run the block's statements */
+				rc = exec_stmts(estate, block->body);
 
-			estate->err_text = gettext_noop("during statement block exit");
+				estate->err_text = gettext_noop("during statement block exit");
 
-			/*
-			 * If the block ended with RETURN, we may need to copy the return
-			 * value out of the subtransaction eval_context.  We can avoid a
-			 * physical copy if the value happens to be a R/W expanded object.
-			 */
-			if (rc == UPLPGSQL_RC_RETURN &&
-				!estate->retisset &&
-				!estate->retisnull)
-			{
-				int16		resTypLen;
-				bool		resTypByVal;
+				/*
+				 * If the block ended with RETURN, we may need to copy the return
+				 * value out of the subtransaction eval_context.  We can avoid a
+				 * physical copy if the value happens to be a R/W expanded object.
+				 */
+				if (rc == UPLPGSQL_RC_RETURN &&
+					!estate->retisset &&
+					!estate->retisnull)
+				{
+					int16		resTypLen;
+					bool		resTypByVal;
 
-				get_typlenbyval(estate->rettype, &resTypLen, &resTypByVal);
-				estate->retval = datumTransfer(estate->retval,
-											   resTypByVal, resTypLen);
-			}
+					get_typlenbyval(estate->rettype, &resTypLen, &resTypByVal);
+					estate->retval = datumTransfer(estate->retval,
+												   resTypByVal, resTypLen);
+				}
 
-			/* Commit the inner transaction, return to outer xact context */
-			ReleaseCurrentSubTransaction();
-			MemoryContextSwitchTo(oldcontext);
-			CurrentResourceOwner = oldowner;
+				/* Commit the inner transaction, return to outer xact context */
+				ReleaseCurrentSubTransaction();
+				MemoryContextSwitchTo(oldcontext);
+				CurrentResourceOwner = oldowner;
 
-			/* Assert that the stmt_mcontext stack is unchanged */
-			Assert(stmt_mcontext == estate->stmt_mcontext);
+				/* Assert that the stmt_mcontext stack is unchanged */
+				Assert(stmt_mcontext == estate->stmt_mcontext);
 
-			/*
-			 * Revert to outer eval_econtext.  (The inner one was
-			 * automatically cleaned up during subxact exit.)
-			 */
-			estate->eval_econtext = old_eval_econtext;
+				/*
+				 * Revert to outer eval_econtext.  (The inner one was
+				 * automatically cleaned up during subxact exit.)
+				 */
+				estate->eval_econtext = old_eval_econtext;
+			}}();
 		}
-		PG_CATCH();
+		catch (cppgres::pg_exception &ex)
 		{
 			ErrorData  *edata;
 			ListCell   *e;
 
 			estate->err_text = gettext_noop("during exception cleanup");
 
-			/* Save error info in our stmt_mcontext */
-			MemoryContextSwitchTo(stmt_mcontext);
-			edata = CopyErrorData();
-			FlushErrorState();
+			/*
+			 * The error data was already copied out of the error state (and
+			 * the error state flushed) by pg_exception's constructor, into
+			 * the exception's own memory context.  It stays valid for the
+			 * lifetime of this catch block and is released when the
+			 * exception is destroyed, so unlike the old PG_CATCH we must
+			 * neither CopyErrorData() nor free edata here.
+			 */
+			edata = const_cast<ErrorData *>(ex.error_data());
 
 			/* Abort the inner transaction */
 			RollbackAndReleaseCurrentSubTransaction();
@@ -2446,7 +2497,9 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 			 * Set up the stmt_mcontext stack as though we had restored our
 			 * previous state and then done push_stmt_mcontext().  The push is
 			 * needed so that statements in the exception handler won't
-			 * clobber the error data that's in our stmt_mcontext.
+			 * clobber statement-lifespan data of the failed statement that's
+			 * still in our stmt_mcontext.  (The error data itself now lives
+			 * in the exception object, not in stmt_mcontext.)
 			 */
 			estate->stmt_mcontext_parent = stmt_mcontext;
 			estate->stmt_mcontext = NULL;
@@ -2517,7 +2570,18 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 
 					estate->err_text = NULL;
 
-					rc = exec_stmts(estate, exception->action);
+					/*
+					 * Run the handler under ffi_guard too: an error raised
+					 * by the handler's body must propagate out of this block
+					 * (an enclosing exec_stmt_block, or the function-level
+					 * error handling, deals with it, as before).  Converting
+					 * it to a C++ exception here lets it unwind through this
+					 * catch block normally — destroying the caught exception
+					 * and its error data — instead of longjmping over it.
+					 */
+					rc = cppgres::ffi_guard{[&]() {
+						return exec_stmts(estate, exception->action);
+					}}();
 
 					break;
 				}
@@ -2530,15 +2594,23 @@ exec_stmt_block(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_block *block)
 			 */
 			estate->cur_error = save_cur_error;
 
-			/* If no match found, re-throw the error */
+			/*
+			 * If no match found, re-throw the error with all fields intact.
+			 * (This longjmps out; the exception's backing storage is handed
+			 * over to Postgres to be released when the error has been
+			 * handled.)
+			 */
 			if (e == NULL)
-				ReThrowError(edata);
+				ex.rethrow();
 
-			/* Restore stmt_mcontext stack and release the error data */
+			/*
+			 * Restore stmt_mcontext stack and reset our statement-lifespan
+			 * workspace.  The error data itself is released when the caught
+			 * exception is destroyed at the end of this block.
+			 */
 			pop_stmt_mcontext(estate);
 			MemoryContextReset(stmt_mcontext);
 		}
-		PG_END_TRY();
 
 		Assert(save_cur_error == estate->cur_error);
 	}
@@ -2778,6 +2850,7 @@ exec_stmt_assign(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_assign *stmt)
  */
 int
 exec_stmt_perform(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_perform *stmt)
+try
 {
 	UPLpgSQL_expr *expr = stmt->expr;
 
@@ -2787,6 +2860,15 @@ exec_stmt_perform(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_perform *stmt)
 
 	return UPLPGSQL_RC_OK;
 }
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
+}
 
 /*
  * exec_stmt_call
@@ -2795,6 +2877,7 @@ exec_stmt_perform(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_perform *stmt)
  */
 int
 exec_stmt_call(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_call *stmt)
+try
 {
 	UPLpgSQL_expr *expr = stmt->expr;
 	LocalTransactionId before_lxid;
@@ -2839,7 +2922,7 @@ exec_stmt_call(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_call *stmt)
 	options.allow_nonatomic = true;
 	options.owner = estate->procedure_resowner;
 
-	rc = SPI_execute_plan_extended(expr->plan, &options);
+	rc = cppgres::ffi_guard{::SPI_execute_plan_extended}(expr->plan, &options);
 
 	if (rc < 0)
 		elog(ERROR, "SPI_execute_plan_extended failed executing query \"%s\": %s",
@@ -2875,9 +2958,18 @@ exec_stmt_call(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_call *stmt)
 		elog(ERROR, "procedure call returned more than one row");
 
 	exec_eval_cleanup(estate);
-	SPI_freetuptable(SPI_tuptable);
+	cppgres::ffi_guard{::SPI_freetuptable}(SPI_tuptable);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 /*
@@ -2910,7 +3002,7 @@ make_callstmt_target(UPLpgSQL_execstate *estate, UPLpgSQL_expr *expr)
 	 * SPI_plan_get_cached_plan to cover the edge case where expr->plan is
 	 * already stale and needs to be updated.
 	 */
-	cplan = SPI_plan_get_cached_plan(expr->plan);
+	cplan = cppgres::ffi_guard{::SPI_plan_get_cached_plan}(expr->plan);
 	if (cplan == NULL || list_length(cplan->stmt_list) != 1)
 		elog(ERROR, "query for CALL statement is not a CallStmt");
 	pstmt = linitial_node(PlannedStmt, cplan->stmt_list);
@@ -3008,6 +3100,7 @@ make_callstmt_target(UPLpgSQL_execstate *estate, UPLpgSQL_expr *expr)
  */
 int
 exec_stmt_getdiag(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_getdiag *stmt)
+try
 {
 	ListCell   *lc;
 
@@ -3114,6 +3207,15 @@ exec_stmt_getdiag(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_getdiag *stmt)
 	exec_eval_cleanup(estate);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 /* ----------
@@ -3468,7 +3570,7 @@ exec_stmt_fors(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fors *stmt)
 	/*
 	 * Close the implicit cursor
 	 */
-	SPI_cursor_close(portal);
+	cppgres::ffi_guard{::SPI_cursor_close}(portal);
 
 	return rc;
 }
@@ -3505,7 +3607,7 @@ exec_stmt_forc(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt)
 		curname = TextDatumGetCString(curvar->value);
 		MemoryContextSwitchTo(oldcontext);
 
-		if (SPI_cursor_find(curname) != NULL)
+		if (cppgres::ffi_guard{::SPI_cursor_find}(curname) != NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DUPLICATE_CURSOR),
 					 errmsg("cursor \"%s\" already in use", curname)));
@@ -3567,7 +3669,7 @@ exec_stmt_forc(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt)
 	/*
 	 * Open the cursor (the paramlist will get copied into the portal)
 	 */
-	portal = SPI_cursor_open_with_paramlist(curname, query->plan,
+	portal = cppgres::ffi_guard{::SPI_cursor_open_with_paramlist}(curname, query->plan,
 											paramLI,
 											estate->readonly_func);
 	if (portal == NULL)
@@ -3601,7 +3703,7 @@ exec_stmt_forc(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt)
 	 * Close portal, and restore cursor variable if it was initially NULL.
 	 * ----------
 	 */
-	SPI_cursor_close(portal);
+	cppgres::ffi_guard{::SPI_cursor_close}(portal);
 
 	if (curname == NULL)
 		assign_simple_var(estate, curvar, (Datum) 0, true, false);
@@ -3638,7 +3740,7 @@ exec_open_forc_cursor(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt)
 		curname = TextDatumGetCString(curvar->value);
 		MemoryContextSwitchTo(oldcontext);
 
-		if (SPI_cursor_find(curname) != NULL)
+		if (cppgres::ffi_guard{::SPI_cursor_find}(curname) != NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DUPLICATE_CURSOR),
 					 errmsg("cursor \"%s\" already in use", curname)));
@@ -3680,7 +3782,7 @@ exec_open_forc_cursor(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt)
 
 	paramLI = setup_param_list(estate, query);
 
-	portal = SPI_cursor_open_with_paramlist(curname, query->plan,
+	portal = cppgres::ffi_guard{::SPI_cursor_open_with_paramlist}(curname, query->plan,
 											paramLI,
 											estate->readonly_func);
 	if (portal == NULL)
@@ -3721,7 +3823,7 @@ exec_close_forc_cursor(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt,
 	UPLpgSQL_var *curvar;
 
 	UnpinPortal(portal);
-	SPI_cursor_close(portal);
+	cppgres::ffi_guard{::SPI_cursor_close}(portal);
 
 	/*
 	 * If the cursor variable's value now matches a generated portal name,
@@ -3748,6 +3850,7 @@ exec_close_forc_cursor(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forc *stmt,
  */
 int
 exec_stmt_foreach_a(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_foreach_a *stmt)
+try
 {
 	ArrayType  *arr;
 	Oid			arrtype;
@@ -3893,6 +3996,15 @@ exec_stmt_foreach_a(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_foreach_a *stmt)
 	exec_set_found(estate, found);
 
 	return rc;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 
@@ -4067,6 +4179,7 @@ exec_stmt_return(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_return *stmt)
 int
 exec_stmt_return_next(UPLpgSQL_execstate *estate,
 					  UPLpgSQL_stmt_return_next *stmt)
+try
 {
 	TupleDesc	tupdesc;
 	int			natts;
@@ -4277,6 +4390,15 @@ exec_stmt_return_next(UPLpgSQL_execstate *estate,
 
 	return UPLPGSQL_RC_OK;
 }
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
+}
 
 /* ----------
  * exec_stmt_return_query		Evaluate a query and add it to the
@@ -4287,6 +4409,7 @@ exec_stmt_return_next(UPLpgSQL_execstate *estate,
 int
 exec_stmt_return_query(UPLpgSQL_execstate *estate,
 					   UPLpgSQL_stmt_return_query *stmt)
+try
 {
 	int64		tcount;
 	DestReceiver *treceiver;
@@ -4346,7 +4469,7 @@ exec_stmt_return_query(UPLpgSQL_execstate *estate,
 		options.must_return_tuples = true;
 		options.dest = treceiver;
 
-		rc = SPI_execute_plan_extended(expr->plan, &options);
+		rc = cppgres::ffi_guard{::SPI_execute_plan_extended}(expr->plan, &options);
 		if (rc < 0)
 			elog(ERROR, "SPI_execute_plan_extended failed executing query \"%s\": %s",
 				 expr->query, SPI_result_code_string(rc));
@@ -4389,7 +4512,7 @@ exec_stmt_return_query(UPLpgSQL_execstate *estate,
 		options.must_return_tuples = true;
 		options.dest = treceiver;
 
-		rc = SPI_execute_extended(querystr, &options);
+		rc = cppgres::ffi_guard{::SPI_execute_extended}(querystr, &options);
 		if (rc < 0)
 			elog(ERROR, "SPI_execute_extended failed executing query \"%s\": %s",
 				 querystr, SPI_result_code_string(rc));
@@ -4407,6 +4530,15 @@ exec_stmt_return_query(UPLpgSQL_execstate *estate,
 	exec_set_found(estate, processed != 0);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 static void
@@ -4467,6 +4599,7 @@ do { \
  */
 int
 exec_stmt_raise(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_raise *stmt)
+try
 {
 	int			err_code = 0;
 	char	   *condname = NULL;
@@ -4670,6 +4803,15 @@ exec_stmt_raise(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_raise *stmt)
 	MemoryContextReset(stmt_mcontext);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 /* ----------
@@ -4883,7 +5025,7 @@ exec_eval_cleanup(UPLpgSQL_execstate *estate)
 {
 	/* Clear result of a full SPI_execute */
 	if (estate->eval_tuptable != NULL)
-		SPI_freetuptable(estate->eval_tuptable);
+		cppgres::ffi_guard{::SPI_freetuptable}(estate->eval_tuptable);
 	estate->eval_tuptable = NULL;
 
 	/*
@@ -4930,12 +5072,13 @@ exec_prepare_plan(UPLpgSQL_execstate *estate,
 	options.parserSetupArg = expr;
 	options.parseMode = expr->parseMode;
 	options.cursorOptions = cursorOptions;
-	plan = SPI_prepare_extended(expr->query, &options);
-	if (plan == NULL)
-		elog(ERROR, "SPI_prepare_extended failed for \"%s\": %s",
-			 expr->query, SPI_result_code_string(SPI_result));
+	{
+		auto		prepared =
+			cppgres::spi_executor::current().plan(expr->query, options);
 
-	SPI_keepplan(plan);
+		prepared.keep();
+		plan = prepared.release();
+	}
 	expr->plan = plan;
 
 	/* Check to see if it's a simple expression */
@@ -4953,6 +5096,7 @@ exec_prepare_plan(UPLpgSQL_execstate *estate,
 int
 exec_stmt_execsql(UPLpgSQL_execstate *estate,
 				  UPLpgSQL_stmt_execsql *stmt)
+try
 {
 	ParamListInfo paramLI;
 	long		tcount;
@@ -4977,7 +5121,7 @@ exec_stmt_execsql(UPLpgSQL_execstate *estate,
 		ListCell   *l;
 
 		stmt->mod_stmt = false;
-		foreach(l, SPI_plan_get_plan_sources(expr->plan))
+		foreach(l, cppgres::ffi_guard{::SPI_plan_get_plan_sources}(expr->plan))
 		{
 			CachedPlanSource *plansource = (CachedPlanSource *) lfirst(l);
 
@@ -5030,7 +5174,7 @@ exec_stmt_execsql(UPLpgSQL_execstate *estate,
 	/*
 	 * Execute the plan
 	 */
-	rc = SPI_execute_plan_with_paramlist(expr->plan, paramLI,
+	rc = cppgres::ffi_guard{::SPI_execute_plan_with_paramlist}(expr->plan, paramLI,
 										 estate->readonly_func, tcount);
 
 	/*
@@ -5161,7 +5305,7 @@ exec_stmt_execsql(UPLpgSQL_execstate *estate,
 
 		/* Clean up */
 		exec_eval_cleanup(estate);
-		SPI_freetuptable(SPI_tuptable);
+		cppgres::ffi_guard{::SPI_freetuptable}(SPI_tuptable);
 	}
 	else
 	{
@@ -5175,6 +5319,15 @@ exec_stmt_execsql(UPLpgSQL_execstate *estate,
 
 	return UPLPGSQL_RC_OK;
 }
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
+}
 
 
 /* ----------
@@ -5185,6 +5338,7 @@ exec_stmt_execsql(UPLpgSQL_execstate *estate,
 int
 exec_stmt_dynexecute(UPLpgSQL_execstate *estate,
 					 UPLpgSQL_stmt_dynexecute *stmt)
+try
 {
 	Datum		query;
 	bool		isnull;
@@ -5223,7 +5377,7 @@ exec_stmt_dynexecute(UPLpgSQL_execstate *estate,
 	options.params = paramLI;
 	options.read_only = estate->readonly_func;
 
-	exec_res = SPI_execute_extended(querystr, &options);
+	exec_res = cppgres::ffi_guard{::SPI_execute_extended}(querystr, &options);
 
 	switch (exec_res)
 	{
@@ -5358,10 +5512,19 @@ exec_stmt_dynexecute(UPLpgSQL_execstate *estate,
 	}
 
 	/* Release any result from SPI_execute, as well as transient data */
-	SPI_freetuptable(SPI_tuptable);
+	cppgres::ffi_guard{::SPI_freetuptable}(SPI_tuptable);
 	MemoryContextReset(stmt_mcontext);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 
@@ -5389,7 +5552,7 @@ exec_stmt_dynfors(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_dynfors *stmt)
 	/*
 	 * Close the implicit cursor
 	 */
-	SPI_cursor_close(portal);
+	cppgres::ffi_guard{::SPI_cursor_close}(portal);
 
 	return rc;
 }
@@ -5401,6 +5564,7 @@ exec_stmt_dynfors(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_dynfors *stmt)
  */
 int
 exec_stmt_open(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_open *stmt)
+try
 {
 	UPLpgSQL_var *curvar;
 	MemoryContext stmt_mcontext = NULL;
@@ -5425,7 +5589,7 @@ exec_stmt_open(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_open *stmt)
 		curname = TextDatumGetCString(curvar->value);
 		MemoryContextSwitchTo(oldcontext);
 
-		if (SPI_cursor_find(curname) != NULL)
+		if (cppgres::ffi_guard{::SPI_cursor_find}(curname) != NULL)
 			ereport(ERROR,
 					(errcode(ERRCODE_DUPLICATE_CURSOR),
 					 errmsg("cursor \"%s\" already in use", curname)));
@@ -5533,7 +5697,7 @@ exec_stmt_open(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_open *stmt)
 	/*
 	 * Open the cursor (the paramlist will get copied into the portal)
 	 */
-	portal = SPI_cursor_open_with_paramlist(curname, query->plan,
+	portal = cppgres::ffi_guard{::SPI_cursor_open_with_paramlist}(curname, query->plan,
 											paramLI,
 											estate->readonly_func);
 	if (portal == NULL)
@@ -5557,6 +5721,15 @@ exec_stmt_open(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_open *stmt)
 
 	return UPLPGSQL_RC_OK;
 }
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
+}
 
 
 /* ----------
@@ -5566,6 +5739,7 @@ exec_stmt_open(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_open *stmt)
  */
 int
 exec_stmt_fetch(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fetch *stmt)
+try
 {
 	UPLpgSQL_var *curvar;
 	long		how_many = stmt->how_many;
@@ -5590,7 +5764,7 @@ exec_stmt_fetch(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fetch *stmt)
 	curname = TextDatumGetCString(curvar->value);
 	MemoryContextSwitchTo(oldcontext);
 
-	portal = SPI_cursor_find(curname);
+	portal = cppgres::ffi_guard{::SPI_cursor_find}(curname);
 	if (portal == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_CURSOR),
@@ -5620,7 +5794,7 @@ exec_stmt_fetch(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fetch *stmt)
 		 * Fetch 1 tuple from the cursor
 		 * ----------
 		 */
-		SPI_scroll_cursor_fetch(portal, stmt->direction, how_many);
+		cppgres::ffi_guard{::SPI_scroll_cursor_fetch}(portal, stmt->direction, how_many);
 		tuptab = SPI_tuptable;
 		n = SPI_processed;
 
@@ -5635,12 +5809,12 @@ exec_stmt_fetch(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fetch *stmt)
 			exec_move_row(estate, target, tuptab->vals[0], tuptab->tupdesc);
 
 		exec_eval_cleanup(estate);
-		SPI_freetuptable(tuptab);
+		cppgres::ffi_guard{::SPI_freetuptable}(tuptab);
 	}
 	else
 	{
 		/* Move the cursor */
-		SPI_scroll_cursor_move(portal, stmt->direction, how_many);
+		cppgres::ffi_guard{::SPI_scroll_cursor_move}(portal, stmt->direction, how_many);
 		n = SPI_processed;
 	}
 
@@ -5660,6 +5834,15 @@ exec_stmt_fetch(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fetch *stmt)
 
 	return UPLPGSQL_RC_OK;
 }
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
+}
 
 /* ----------
  * exec_stmt_close			Close a cursor
@@ -5667,6 +5850,7 @@ exec_stmt_fetch(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_fetch *stmt)
  */
 int
 exec_stmt_close(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_close *stmt)
+try
 {
 	UPLpgSQL_var *curvar;
 	Portal		portal;
@@ -5688,7 +5872,7 @@ exec_stmt_close(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_close *stmt)
 	curname = TextDatumGetCString(curvar->value);
 	MemoryContextSwitchTo(oldcontext);
 
-	portal = SPI_cursor_find(curname);
+	portal = cppgres::ffi_guard{::SPI_cursor_find}(curname);
 	if (portal == NULL)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_CURSOR),
@@ -5698,9 +5882,18 @@ exec_stmt_close(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_close *stmt)
 	 * And close it.
 	 * ----------
 	 */
-	SPI_cursor_close(portal);
+	cppgres::ffi_guard{::SPI_cursor_close}(portal);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 /*
@@ -5710,11 +5903,12 @@ exec_stmt_close(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_close *stmt)
  */
 int
 exec_stmt_commit(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_commit *stmt)
+try
 {
 	if (stmt->chain)
-		SPI_commit_and_chain();
+		cppgres::ffi_guard{::SPI_commit_and_chain}();
 	else
-		SPI_commit();
+		cppgres::ffi_guard{::SPI_commit}();
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old
@@ -5725,6 +5919,15 @@ exec_stmt_commit(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_commit *stmt)
 	uplpgsql_create_econtext(estate);
 
 	return UPLPGSQL_RC_OK;
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 /*
@@ -5734,11 +5937,12 @@ exec_stmt_commit(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_commit *stmt)
  */
 int
 exec_stmt_rollback(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_rollback *stmt)
+try
 {
 	if (stmt->chain)
-		SPI_rollback_and_chain();
+		cppgres::ffi_guard{::SPI_rollback_and_chain}();
 	else
-		SPI_rollback();
+		cppgres::ffi_guard{::SPI_rollback}();
 
 	/*
 	 * We need to build new simple-expression infrastructure, since the old
@@ -5750,6 +5954,15 @@ exec_stmt_rollback(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_rollback *stmt)
 
 	return UPLPGSQL_RC_OK;
 }
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
+}
 
 /* ----------
  * exec_assign_expr			Put an expression's result into a variable.
@@ -5758,6 +5971,7 @@ exec_stmt_rollback(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_rollback *stmt)
 void
 exec_assign_expr(UPLpgSQL_execstate *estate, UPLpgSQL_datum *target,
 				 UPLpgSQL_expr *expr)
+try
 {
 	Datum		value;
 	bool		isnull;
@@ -5773,6 +5987,15 @@ exec_assign_expr(UPLpgSQL_execstate *estate, UPLpgSQL_datum *target,
 	value = exec_eval_expr(estate, expr, &isnull, &valtype, &valtypmod);
 	exec_assign_value(estate, target, value, isnull, valtype, valtypmod);
 	exec_eval_cleanup(estate);
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 
@@ -6492,7 +6715,7 @@ exec_eval_expr(UPLpgSQL_execstate *estate,
 	/*
 	 * Return the single result Datum.
 	 */
-	return SPI_getbinval(estate->eval_tuptable->vals[0],
+	return cppgres::ffi_guard{::SPI_getbinval}(estate->eval_tuptable->vals[0],
 						 estate->eval_tuptable->tupdesc, 1, isNull);
 }
 
@@ -6542,7 +6765,7 @@ exec_run_select(UPLpgSQL_execstate *estate,
 	 */
 	if (portalP != NULL)
 	{
-		*portalP = SPI_cursor_open_with_paramlist(NULL, expr->plan,
+		*portalP = cppgres::ffi_guard{::SPI_cursor_open_with_paramlist}(nullptr, expr->plan,
 												  paramLI,
 												  estate->readonly_func);
 		if (*portalP == NULL)
@@ -6555,7 +6778,7 @@ exec_run_select(UPLpgSQL_execstate *estate,
 	/*
 	 * Execute the query
 	 */
-	rc = SPI_execute_plan_with_paramlist(expr->plan, paramLI,
+	rc = cppgres::ffi_guard{::SPI_execute_plan_with_paramlist}(expr->plan, paramLI,
 										 estate->readonly_func, maxtuples);
 	if (rc != SPI_OK_SELECT)
 	{
@@ -6626,7 +6849,7 @@ exec_for_query(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forq *stmt,
 	 * few more rows to avoid multiple trips through executor startup
 	 * overhead.
 	 */
-	SPI_cursor_fetch(portal, true, prefetch_ok ? 10 : 1);
+	cppgres::ffi_guard{::SPI_cursor_fetch}(portal, true, prefetch_ok ? 10 : 1);
 	tuptab = SPI_tuptable;
 	n = SPI_processed;
 
@@ -6713,12 +6936,12 @@ exec_for_query(UPLpgSQL_execstate *estate, UPLpgSQL_stmt_forq *stmt,
 			LOOP_RC_PROCESSING(stmt->label, goto loop_exit);
 		}
 
-		SPI_freetuptable(tuptab);
+		cppgres::ffi_guard{::SPI_freetuptable}(tuptab);
 
 		/*
 		 * Fetch more tuples.  If prefetching is allowed, grab 50 at a time.
 		 */
-		SPI_cursor_fetch(portal, true, prefetch_ok ? 50 : 1);
+		cppgres::ffi_guard{::SPI_cursor_fetch}(portal, true, prefetch_ok ? 50 : 1);
 		tuptab = SPI_tuptable;
 		n = SPI_processed;
 	}
@@ -6728,7 +6951,7 @@ loop_exit:
 	/*
 	 * Release last group of tuples (if any)
 	 */
-	SPI_freetuptable(tuptab);
+	cppgres::ffi_guard{::SPI_freetuptable}(tuptab);
 
 	UnpinPortal(portal);
 
@@ -6853,7 +7076,7 @@ exec_eval_simple_expr(UPLpgSQL_execstate *estate,
 
 		/* Do the replanning work in the eval_mcontext */
 		oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
-		cplan = SPI_plan_get_cached_plan(expr->plan);
+		cplan = cppgres::ffi_guard{::SPI_plan_get_cached_plan}(expr->plan);
 		MemoryContextSwitchTo(oldcontext);
 
 		/*
@@ -8910,7 +9133,7 @@ exec_simple_check_plan(UPLpgSQL_execstate *estate, UPLpgSQL_expr *expr)
 		return;
 
 	/* exec_is_simple_query verified that there's just one CachedPlanSource */
-	plansources = SPI_plan_get_plan_sources(expr->plan);
+	plansources = cppgres::ffi_guard{::SPI_plan_get_plan_sources}(expr->plan);
 	plansource = (CachedPlanSource *) linitial(plansources);
 
 	/*
@@ -8919,7 +9142,7 @@ exec_simple_check_plan(UPLpgSQL_execstate *estate, UPLpgSQL_expr *expr)
 	 * in which case the expr is left marked "not simple", which is fine.)
 	 */
 	oldcontext = MemoryContextSwitchTo(get_eval_mcontext(estate));
-	cplan = SPI_plan_get_cached_plan(expr->plan);
+	cplan = cppgres::ffi_guard{::SPI_plan_get_cached_plan}(expr->plan);
 	MemoryContextSwitchTo(oldcontext);
 
 	/* Can't fail, because we checked for a single CachedPlanSource above */
@@ -8967,7 +9190,7 @@ exec_is_simple_query(UPLpgSQL_expr *expr)
 	/*
 	 * We can only test queries that resulted in exactly one CachedPlanSource.
 	 */
-	plansources = SPI_plan_get_plan_sources(expr->plan);
+	plansources = cppgres::ffi_guard{::SPI_plan_get_plan_sources}(expr->plan);
 	if (list_length(plansources) != 1)
 		return false;
 	plansource = (CachedPlanSource *) linitial(plansources);
@@ -9348,6 +9571,7 @@ exec_check_assignable(UPLpgSQL_execstate *estate, int dno)
  */
 void
 exec_set_found(UPLpgSQL_execstate *estate, bool state)
+try
 {
 	UPLpgSQL_var *var;
 
@@ -9362,6 +9586,15 @@ exec_set_found(UPLpgSQL_execstate *estate, bool state)
 	pg_assume(var->datatype->typlen != -1);
 
 	assign_simple_var(estate, var, BoolGetDatum(state), false, false);
+}
+catch (...)
+{
+	/*
+	 * The JIT compiler embeds this function's address directly into
+	 * generated code; a C++ exception must not unwind into a JIT'd
+	 * frame.  Convert it back to a Postgres error at this boundary.
+	 */
+	uplpgsql::reraise_as_pg_error(std::current_exception());
 }
 
 /*
@@ -9777,7 +10010,7 @@ exec_dynquery_with_params(UPLpgSQL_execstate *estate,
 	options.cursorOptions = cursorOptions;
 	options.read_only = estate->readonly_func;
 
-	portal = SPI_cursor_parse_open(portalname, querystr, &options);
+	portal = cppgres::ffi_guard{::SPI_cursor_parse_open}(portalname, querystr, &options);
 
 	if (portal == NULL)
 		elog(ERROR, "could not open implicit cursor for query \"%s\": %s",

@@ -48,6 +48,8 @@ extern "C" {
 }
 #endif
 
+#include "cppgres.hpp"
+
 /* ----------
  * Local variables for namespace handling
  *
@@ -737,7 +739,7 @@ free_expr(UPLpgSQL_expr *expr, void *context)
 {
 	if (expr && expr->plan)
 	{
-		SPI_freeplan(expr->plan);
+		cppgres::ffi_guard{::SPI_freeplan}(expr->plan);
 		expr->plan = NULL;
 	}
 }

@@ -84,6 +84,38 @@ extern "C" {
 }
 #endif
 
+#include "cppgres.hpp"
+
+namespace uplpgsql {
+/*
+ * Exceptions must not unwind into JIT'd frames (they have no unwind info,
+ * so the unwinder would call std::terminate); convert them back to
+ * Postgres errors (a longjmp to whichever handler is armed) at each
+ * runtime helper's boundary.
+ */
+template <typename Body>
+static auto rt_boundary(Body &&body) -> decltype(body())
+{
+	try
+	{
+		return body();
+	}
+	catch (cppgres::pg_exception &e)
+	{
+		e.rethrow();
+	}
+	catch (const std::exception &e)
+	{
+		cppgres::report(ERROR, "%s", e.what());
+	}
+	catch (...)
+	{
+		cppgres::report(ERROR, "unknown exception");
+	}
+	pg_unreachable();
+}
+} /* namespace uplpgsql */
+
 /*
  * Per-cursor context for batch prefetching in FOR-query loops.
  *
@@ -113,22 +145,24 @@ UPL_RT_EXPORT int32
 uplpgsql_rt_exec_block_protected(UPLpgSQL_exec_state *estate,
 								 UPLpgSQL_stmt_block *stmt)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	int32		rc;
+	return uplpgsql::rt_boundary([&]() -> int32 {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		int32		rc;
 
-	rc = exec_stmt_block(plstate, stmt);
+		rc = exec_stmt_block(plstate, stmt);
 
-	/*
-	 * If the block returned via RETURN, copy retval/retisnull back to
-	 * JIT state so the caller can see the result.
-	 */
-	if (rc == UPLPGSQL_RC_RETURN)
-	{
-		estate->retval = plstate->retval;
-		estate->retisnull = plstate->retisnull;
-	}
+		/*
+		 * If the block returned via RETURN, copy retval/retisnull back to
+		 * JIT state so the caller can see the result.
+		 */
+		if (rc == UPLPGSQL_RC_RETURN)
+		{
+			estate->retval = plstate->retval;
+			estate->retisnull = plstate->retisnull;
+		}
 
-	return rc;
+		return rc;
+	});
 }
 
 /*
@@ -141,30 +175,32 @@ UPL_RT_EXPORT Datum
 uplpgsql_rt_eval_expr(UPLpgSQL_exec_state *estate,
 					  UPLpgSQL_expr *expr, bool *isNull)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	Datum		result;
-	Oid			rettype;
-	int32		rettypmod;
+	return uplpgsql::rt_boundary([&]() -> Datum {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		Datum		result;
+		Oid			rettype;
+		int32		rettypmod;
 
-	result = exec_eval_expr(plstate, expr, isNull, &rettype, &rettypmod);
+		result = exec_eval_expr(plstate, expr, isNull, &rettype, &rettypmod);
 
-	/*
-	 * exec_eval_expr returns a value that may be in the eval_tuptable
-	 * and could be freed on the next call. Copy pass-by-reference values.
-	 */
-	if (!*isNull)
-	{
-		int16	typlen;
-		bool	typbyval;
+		/*
+		 * exec_eval_expr returns a value that may be in the eval_tuptable
+		 * and could be freed on the next call. Copy pass-by-reference values.
+		 */
+		if (!*isNull)
+		{
+			int16	typlen;
+			bool	typbyval;
 
-		get_typlenbyval(rettype, &typlen, &typbyval);
-		if (!typbyval)
-			result = datumCopy(result, typbyval, typlen);
-	}
+			get_typlenbyval(rettype, &typlen, &typbyval);
+			if (!typbyval)
+				result = datumCopy(result, typbyval, typlen);
+		}
 
-	exec_eval_cleanup(plstate);
+		exec_eval_cleanup(plstate);
 
-	return result;
+		return result;
+	});
 }
 
 /*
@@ -174,17 +210,19 @@ uplpgsql_rt_eval_expr(UPLpgSQL_exec_state *estate,
 UPL_RT_EXPORT bool
 uplpgsql_rt_eval_bool(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	bool		isnull;
-	bool		result;
+	return uplpgsql::rt_boundary([&]() -> bool {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		bool		isnull;
+		bool		result;
 
-	result = exec_eval_boolean(plstate, expr, &isnull);
-	exec_eval_cleanup(plstate);
+		result = exec_eval_boolean(plstate, expr, &isnull);
+		exec_eval_cleanup(plstate);
 
-	if (isnull)
-		return false;
+		if (isnull)
+			return false;
 
-	return result;
+		return result;
+	});
 }
 
 /*
@@ -193,19 +231,21 @@ uplpgsql_rt_eval_bool(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 UPL_RT_EXPORT int32
 uplpgsql_rt_eval_int(UPLpgSQL_exec_state *estate, UPLpgSQL_expr *expr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	bool		isnull;
-	int32		result;
+	return uplpgsql::rt_boundary([&]() -> int32 {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		bool		isnull;
+		int32		result;
 
-	result = exec_eval_integer(plstate, expr, &isnull);
-	exec_eval_cleanup(plstate);
+		result = exec_eval_integer(plstate, expr, &isnull);
+		exec_eval_cleanup(plstate);
 
-	if (isnull)
-		ereport(ERROR,
-				(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
-				 errmsg("NULL value not allowed for integer expression")));
+		if (isnull)
+			ereport(ERROR,
+					(errcode(ERRCODE_NULL_VALUE_NOT_ALLOWED),
+					 errmsg("NULL value not allowed for integer expression")));
 
-	return result;
+		return result;
+	});
 }
 
 /*
@@ -241,33 +281,35 @@ UPL_RT_EXPORT void
 uplpgsql_rt_case_assign_test(UPLpgSQL_exec_state *estate, int t_varno,
 							 UPLpgSQL_expr *t_expr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_var *t_var;
-	Datum		t_val;
-	bool		isnull;
-	Oid			t_typoid;
-	int32		t_typmod;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_var *t_var;
+		Datum		t_val;
+		bool		isnull;
+		Oid			t_typoid;
+		int32		t_typmod;
 
-	t_val = exec_eval_expr(plstate, t_expr, &isnull, &t_typoid, &t_typmod);
+		t_val = exec_eval_expr(plstate, t_expr, &isnull, &t_typoid, &t_typmod);
 
-	t_var = (UPLpgSQL_var *) plstate->datums[t_varno];
+		t_var = (UPLpgSQL_var *) plstate->datums[t_varno];
 
-	/*
-	 * When the expected datatype differs from the real one, change it.  This
-	 * modifies an execution copy of the datum, so it does not affect the
-	 * stored parse tree.
-	 */
-	if (t_var->datatype->typoid != t_typoid ||
-		t_var->datatype->atttypmod != t_typmod)
-		t_var->datatype = uplpgsql_build_datatype(t_typoid,
-												  t_typmod,
-												  plstate->func->fn_input_collation,
-												  NULL);
+		/*
+		 * When the expected datatype differs from the real one, change it.  This
+		 * modifies an execution copy of the datum, so it does not affect the
+		 * stored parse tree.
+		 */
+		if (t_var->datatype->typoid != t_typoid ||
+			t_var->datatype->atttypmod != t_typmod)
+			t_var->datatype = uplpgsql_build_datatype(t_typoid,
+													  t_typmod,
+													  plstate->func->fn_input_collation,
+													  NULL);
 
-	exec_assign_value(plstate, (UPLpgSQL_datum *) t_var, t_val, isnull,
-					  t_typoid, t_typmod);
+		exec_assign_value(plstate, (UPLpgSQL_datum *) t_var, t_val, isnull,
+						  t_typoid, t_typmod);
 
-	exec_eval_cleanup(plstate);
+		exec_eval_cleanup(plstate);
+	});
 }
 
 /*
@@ -279,86 +321,88 @@ uplpgsql_rt_case_assign_test(UPLpgSQL_exec_state *estate, int t_varno,
 UPL_RT_EXPORT void
 uplpgsql_rt_init_var(UPLpgSQL_exec_state *estate, int dno)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_datum	   *datum = plstate->datums[dno];
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_datum	   *datum = plstate->datums[dno];
 
-	/*
-	 * Set error context so that constraint violations during init report
-	 * "during statement block local variable initialization" just like
-	 * the interpreter does in exec_stmt_block().
-	 */
-	plstate->err_text = gettext_noop("during statement block local variable initialization");
-	plstate->err_var = (UPLpgSQL_variable *) datum;
+		/*
+		 * Set error context so that constraint violations during init report
+		 * "during statement block local variable initialization" just like
+		 * the interpreter does in exec_stmt_block().
+		 */
+		plstate->err_text = gettext_noop("during statement block local variable initialization");
+		plstate->err_var = (UPLpgSQL_variable *) datum;
 
-	switch (datum->dtype)
-	{
-		case UPLPGSQL_DTYPE_VAR:
-			{
-				UPLpgSQL_var *var = (UPLpgSQL_var *) datum;
-
-				/*
-				 * Free any old value, in case re-entering block, and
-				 * initialize to NULL.
-				 */
-				assign_simple_var(plstate, var, (Datum) 0, true, false);
-
-				if (var->default_val == NULL)
+		switch (datum->dtype)
+		{
+			case UPLPGSQL_DTYPE_VAR:
 				{
+					UPLpgSQL_var *var = (UPLpgSQL_var *) datum;
+
 					/*
-					 * If needed, give the datatype a chance to reject NULLs,
-					 * by assigning a NULL to the variable.  We claim the value
-					 * is of type UNKNOWN, not the var's datatype, else
-					 * coercion will be skipped.
+					 * Free any old value, in case re-entering block, and
+					 * initialize to NULL.
 					 */
-					if (var->datatype->typtype == TYPTYPE_DOMAIN)
-						exec_assign_value(plstate,
-										  (UPLpgSQL_datum *) var,
-										  (Datum) 0,
-										  true,
-										  UNKNOWNOID,
-										  -1);
+					assign_simple_var(plstate, var, (Datum) 0, true, false);
 
-					/* parser should have rejected NOT NULL */
-					Assert(!var->notnull);
+					if (var->default_val == NULL)
+					{
+						/*
+						 * If needed, give the datatype a chance to reject NULLs,
+						 * by assigning a NULL to the variable.  We claim the value
+						 * is of type UNKNOWN, not the var's datatype, else
+						 * coercion will be skipped.
+						 */
+						if (var->datatype->typtype == TYPTYPE_DOMAIN)
+							exec_assign_value(plstate,
+											  (UPLpgSQL_datum *) var,
+											  (Datum) 0,
+											  true,
+											  UNKNOWNOID,
+											  -1);
+
+						/* parser should have rejected NOT NULL */
+						Assert(!var->notnull);
+					}
+					else
+					{
+						exec_assign_expr(plstate, (UPLpgSQL_datum *) var,
+										 var->default_val);
+					}
 				}
-				else
+				break;
+
+			case UPLPGSQL_DTYPE_REC:
 				{
-					exec_assign_expr(plstate, (UPLpgSQL_datum *) var,
-									 var->default_val);
+					UPLpgSQL_rec *rec = (UPLpgSQL_rec *) datum;
+
+					if (rec->default_val == NULL)
+					{
+						/*
+						 * If needed, give the datatype a chance to reject NULLs,
+						 * by assigning a NULL to the variable.
+						 */
+						exec_move_row(plstate, (UPLpgSQL_variable *) rec,
+									  NULL, NULL);
+
+						/* parser should have rejected NOT NULL */
+						Assert(!rec->notnull);
+					}
+					else
+					{
+						exec_assign_expr(plstate, (UPLpgSQL_datum *) rec,
+										 rec->default_val);
+					}
 				}
-			}
-			break;
+				break;
 
-		case UPLPGSQL_DTYPE_REC:
-			{
-				UPLpgSQL_rec *rec = (UPLpgSQL_rec *) datum;
+			default:
+				elog(ERROR, "unrecognized dtype: %d", datum->dtype);
+		}
 
-				if (rec->default_val == NULL)
-				{
-					/*
-					 * If needed, give the datatype a chance to reject NULLs,
-					 * by assigning a NULL to the variable.
-					 */
-					exec_move_row(plstate, (UPLpgSQL_variable *) rec,
-								  NULL, NULL);
-
-					/* parser should have rejected NOT NULL */
-					Assert(!rec->notnull);
-				}
-				else
-				{
-					exec_assign_expr(plstate, (UPLpgSQL_datum *) rec,
-									 rec->default_val);
-				}
-			}
-			break;
-
-		default:
-			elog(ERROR, "unrecognized dtype: %d", datum->dtype);
-	}
-
-	plstate->err_text = NULL;
-	plstate->err_var = NULL;
+		plstate->err_text = NULL;
+		plstate->err_var = NULL;
+	});
 }
 
 /*
@@ -381,16 +425,18 @@ uplpgsql_rt_set_found(UPLpgSQL_exec_state *estate, bool value)
 UPL_RT_EXPORT int32
 uplpgsql_rt_exec_return(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_return *stmt)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	int			rc;
+	return uplpgsql::rt_boundary([&]() -> int32 {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		int			rc;
 
-	rc = exec_stmt_return(plstate, stmt);
+		rc = exec_stmt_return(plstate, stmt);
 
-	/* Copy back to JIT state so the caller can see the result */
-	estate->retval = plstate->retval;
-	estate->retisnull = plstate->retisnull;
+		/* Copy back to JIT state so the caller can see the result */
+		estate->retval = plstate->retval;
+		estate->retisnull = plstate->retisnull;
 
-	return rc;
+		return rc;
+	});
 }
 
 /*
@@ -502,7 +548,9 @@ uplpgsql_rt_case_error(UPLpgSQL_exec_state *estate, int lineno)
 UPL_RT_EXPORT void
 uplpgsql_rt_exec_assert(UPLpgSQL_exec_state *estate, UPLpgSQL_stmt_assert *stmt)
 {
-	exec_stmt_assert(estate->uplpgsql_estate, stmt);
+	return uplpgsql::rt_boundary([&]() -> void {
+		exec_stmt_assert(estate->uplpgsql_estate, stmt);
+	});
 }
 
 /*
@@ -552,17 +600,19 @@ UPL_RT_EXPORT void *
 uplpgsql_rt_open_query_cursor(UPLpgSQL_exec_state *estate,
 							  UPLpgSQL_expr *query)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_cursor_ctx *cctx;
-	Portal		portal;
+	return uplpgsql::rt_boundary([&]() -> void * {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_cursor_ctx *cctx;
+		Portal		portal;
 
-	exec_run_select(plstate, query, 0, &portal);
-	PinPortal(portal);
+		exec_run_select(plstate, query, 0, &portal);
+		PinPortal(portal);
 
-	cctx = (UPLpgSQL_cursor_ctx *) palloc0(sizeof(UPLpgSQL_cursor_ctx));
-	cctx->portal = portal;
+		cctx = (UPLpgSQL_cursor_ctx *) palloc0(sizeof(UPLpgSQL_cursor_ctx));
+		cctx->portal = portal;
 
-	return (void *) cctx;
+		return (void *) cctx;
+	});
 }
 
 /*
@@ -584,131 +634,133 @@ UPL_RT_EXPORT bool
 uplpgsql_rt_fetch_cursor_row(UPLpgSQL_exec_state *estate,
 							 void *portal_ptr, int target_dno)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_cursor_ctx *cctx = (UPLpgSQL_cursor_ctx *) portal_ptr;
-	UPLpgSQL_variable *target;
+	return uplpgsql::rt_boundary([&]() -> bool {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_cursor_ctx *cctx = (UPLpgSQL_cursor_ctx *) portal_ptr;
+		UPLpgSQL_variable *target;
 
-	target = (UPLpgSQL_variable *) plstate->datums[target_dno];
-
-	/*
-	 * If we have rows remaining in the current batch, assign the next one.
-	 */
-	if (cctx->batch_idx < cctx->batch_count)
-	{
-		SPITupleTable *tuptab = cctx->batch_tuptab;
-		uint64		idx = cctx->batch_idx++;
+		target = (UPLpgSQL_variable *) plstate->datums[target_dno];
 
 		/*
-		 * Fast path for RECORD targets: use expanded_record_set_tuple()
-		 * when the tupdesc hasn't changed since the first row.  This is
-		 * the same optimization PL/pgSQL uses in exec_for_query.
+		 * If we have rows remaining in the current batch, assign the next one.
 		 */
-		if (target->dtype == UPLPGSQL_DTYPE_REC)
+		if (cctx->batch_idx < cctx->batch_count)
 		{
-			UPLpgSQL_rec *rec = (UPLpgSQL_rec *) target;
+			SPITupleTable *tuptab = cctx->batch_tuptab;
+			uint64		idx = cctx->batch_idx++;
 
-			if (rec->erh &&
-				rec->erh->er_tupdesc_id == cctx->batch_tupdesc_id &&
-				cctx->batch_tupdescs_match)
+			/*
+			 * Fast path for RECORD targets: use expanded_record_set_tuple()
+			 * when the tupdesc hasn't changed since the first row.  This is
+			 * the same optimization PL/pgSQL uses in exec_for_query.
+			 */
+			if (target->dtype == UPLPGSQL_DTYPE_REC)
 			{
-				expanded_record_set_tuple(rec->erh, tuptab->vals[idx],
-										  true, !plstate->atomic);
-				return true;
+				UPLpgSQL_rec *rec = (UPLpgSQL_rec *) target;
+
+				if (rec->erh &&
+					rec->erh->er_tupdesc_id == cctx->batch_tupdesc_id &&
+					cctx->batch_tupdescs_match)
+				{
+					expanded_record_set_tuple(rec->erh, tuptab->vals[idx],
+											  true, !plstate->atomic);
+					return true;
+				}
 			}
+
+			exec_move_row(plstate, target, tuptab->vals[idx], tuptab->tupdesc);
+			exec_eval_cleanup(plstate);
+
+			/* Check if fast path is usable for subsequent rows */
+			if (target->dtype == UPLPGSQL_DTYPE_REC)
+			{
+				UPLpgSQL_rec *rec = (UPLpgSQL_rec *) target;
+
+				if (rec->erh)
+				{
+					if (cctx->batch_tupdescs_match)
+					{
+						cctx->batch_tupdescs_match =
+							(rec->rectypeid == RECORDOID ||
+							 rec->rectypeid == tuptab->tupdesc->tdtypeid);
+					}
+					cctx->batch_tupdesc_id = rec->erh->er_tupdesc_id;
+				}
+			}
+
+			return true;
 		}
 
-		exec_move_row(plstate, target, tuptab->vals[idx], tuptab->tupdesc);
-		exec_eval_cleanup(plstate);
-
-		/* Check if fast path is usable for subsequent rows */
-		if (target->dtype == UPLPGSQL_DTYPE_REC)
+		/*
+		 * Current batch is exhausted.  Free it and fetch a new one.
+		 */
+		if (cctx->batch_tuptab)
 		{
-			UPLpgSQL_rec *rec = (UPLpgSQL_rec *) target;
+			SPI_freetuptable(cctx->batch_tuptab);
+			cctx->batch_tuptab = NULL;
+		}
 
-			if (rec->erh)
+		/*
+		 * Fetch next batch: 10 rows for first fetch (to minimize startup
+		 * overhead), 50 rows for subsequent fetches (matching PL/pgSQL).
+		 *
+		 * Like PL/pgSQL, in non-atomic contexts we don't prefetch to avoid
+		 * dangling toast references if the user commits mid-loop.
+		 */
+		{
+			long	fetch_count;
+
+			if (!plstate->atomic)
+				fetch_count = 1;
+			else if (cctx->batch_count == 0)
+				fetch_count = 10;	/* first fetch */
+			else
+				fetch_count = 50;	/* subsequent fetches */
+
+			SPI_cursor_fetch(cctx->portal, true, fetch_count);
+		}
+
+		cctx->batch_tuptab = SPI_tuptable;
+		cctx->batch_count = SPI_processed;
+		cctx->batch_idx = 0;
+
+		if (cctx->batch_count == 0)
+		{
+			/* No more rows — set target to NULL */
+			exec_move_row(plstate, target, NULL,
+						  cctx->batch_tuptab->tupdesc);
+			exec_eval_cleanup(plstate);
+			SPI_freetuptable(cctx->batch_tuptab);
+			cctx->batch_tuptab = NULL;
+			return false;
+		}
+
+		/* Assign first row of new batch */
+		{
+			SPITupleTable *tuptab = cctx->batch_tuptab;
+
+			cctx->batch_idx = 1;
+
+			exec_move_row(plstate, target, tuptab->vals[0], tuptab->tupdesc);
+			exec_eval_cleanup(plstate);
+
+			/* Initialize fast-path state for subsequent rows */
+			if (target->dtype == UPLPGSQL_DTYPE_REC)
 			{
-				if (cctx->batch_tupdescs_match)
+				UPLpgSQL_rec *rec = (UPLpgSQL_rec *) target;
+
+				if (rec->erh)
 				{
 					cctx->batch_tupdescs_match =
 						(rec->rectypeid == RECORDOID ||
 						 rec->rectypeid == tuptab->tupdesc->tdtypeid);
+					cctx->batch_tupdesc_id = rec->erh->er_tupdesc_id;
 				}
-				cctx->batch_tupdesc_id = rec->erh->er_tupdesc_id;
 			}
 		}
 
 		return true;
-	}
-
-	/*
-	 * Current batch is exhausted.  Free it and fetch a new one.
-	 */
-	if (cctx->batch_tuptab)
-	{
-		SPI_freetuptable(cctx->batch_tuptab);
-		cctx->batch_tuptab = NULL;
-	}
-
-	/*
-	 * Fetch next batch: 10 rows for first fetch (to minimize startup
-	 * overhead), 50 rows for subsequent fetches (matching PL/pgSQL).
-	 *
-	 * Like PL/pgSQL, in non-atomic contexts we don't prefetch to avoid
-	 * dangling toast references if the user commits mid-loop.
-	 */
-	{
-		long	fetch_count;
-
-		if (!plstate->atomic)
-			fetch_count = 1;
-		else if (cctx->batch_count == 0)
-			fetch_count = 10;	/* first fetch */
-		else
-			fetch_count = 50;	/* subsequent fetches */
-
-		SPI_cursor_fetch(cctx->portal, true, fetch_count);
-	}
-
-	cctx->batch_tuptab = SPI_tuptable;
-	cctx->batch_count = SPI_processed;
-	cctx->batch_idx = 0;
-
-	if (cctx->batch_count == 0)
-	{
-		/* No more rows — set target to NULL */
-		exec_move_row(plstate, target, NULL,
-					  cctx->batch_tuptab->tupdesc);
-		exec_eval_cleanup(plstate);
-		SPI_freetuptable(cctx->batch_tuptab);
-		cctx->batch_tuptab = NULL;
-		return false;
-	}
-
-	/* Assign first row of new batch */
-	{
-		SPITupleTable *tuptab = cctx->batch_tuptab;
-
-		cctx->batch_idx = 1;
-
-		exec_move_row(plstate, target, tuptab->vals[0], tuptab->tupdesc);
-		exec_eval_cleanup(plstate);
-
-		/* Initialize fast-path state for subsequent rows */
-		if (target->dtype == UPLPGSQL_DTYPE_REC)
-		{
-			UPLpgSQL_rec *rec = (UPLpgSQL_rec *) target;
-
-			if (rec->erh)
-			{
-				cctx->batch_tupdescs_match =
-					(rec->rectypeid == RECORDOID ||
-					 rec->rectypeid == tuptab->tupdesc->tdtypeid);
-				cctx->batch_tupdesc_id = rec->erh->er_tupdesc_id;
-			}
-		}
-	}
-
-	return true;
+	});
 }
 
 /*
@@ -745,15 +797,17 @@ UPL_RT_EXPORT void *
 uplpgsql_rt_open_forc_cursor(UPLpgSQL_exec_state *estate,
 							 UPLpgSQL_stmt_forc *stmt)
 {
-	UPLpgSQL_cursor_ctx *cctx;
-	Portal		portal;
+	return uplpgsql::rt_boundary([&]() -> void * {
+		UPLpgSQL_cursor_ctx *cctx;
+		Portal		portal;
 
-	portal = exec_open_forc_cursor(estate->uplpgsql_estate, stmt);
+		portal = exec_open_forc_cursor(estate->uplpgsql_estate, stmt);
 
-	cctx = (UPLpgSQL_cursor_ctx *) palloc0(sizeof(UPLpgSQL_cursor_ctx));
-	cctx->portal = portal;
+		cctx = (UPLpgSQL_cursor_ctx *) palloc0(sizeof(UPLpgSQL_cursor_ctx));
+		cctx->portal = portal;
 
-	return (void *) cctx;
+		return (void *) cctx;
+	});
 }
 
 /*
@@ -767,17 +821,19 @@ uplpgsql_rt_close_forc_cursor(UPLpgSQL_exec_state *estate,
 							  UPLpgSQL_stmt_forc *stmt,
 							  void *portal_ptr)
 {
-	UPLpgSQL_cursor_ctx *cctx = (UPLpgSQL_cursor_ctx *) portal_ptr;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_cursor_ctx *cctx = (UPLpgSQL_cursor_ctx *) portal_ptr;
 
-	/* Free any remaining batch from prefetch */
-	if (cctx->batch_tuptab)
-	{
-		SPI_freetuptable(cctx->batch_tuptab);
-		cctx->batch_tuptab = NULL;
-	}
+		/* Free any remaining batch from prefetch */
+		if (cctx->batch_tuptab)
+		{
+			SPI_freetuptable(cctx->batch_tuptab);
+			cctx->batch_tuptab = NULL;
+		}
 
-	exec_close_forc_cursor(estate->uplpgsql_estate, stmt, cctx->portal);
-	pfree(cctx);
+		exec_close_forc_cursor(estate->uplpgsql_estate, stmt, cctx->portal);
+		pfree(cctx);
+	});
 }
 
 /*
@@ -993,18 +1049,20 @@ UPL_RT_EXPORT void *
 uplpgsql_rt_open_dynfors_cursor(UPLpgSQL_exec_state *estate,
 								UPLpgSQL_stmt_dynfors *stmt)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_cursor_ctx *cctx;
-	Portal		portal;
+	return uplpgsql::rt_boundary([&]() -> void * {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_cursor_ctx *cctx;
+		Portal		portal;
 
-	portal = exec_dynquery_with_params(plstate, stmt->query, stmt->params,
-									   NULL, CURSOR_OPT_NO_SCROLL);
-	PinPortal(portal);
+		portal = exec_dynquery_with_params(plstate, stmt->query, stmt->params,
+										   NULL, CURSOR_OPT_NO_SCROLL);
+		PinPortal(portal);
 
-	cctx = (UPLpgSQL_cursor_ctx *) palloc0(sizeof(UPLpgSQL_cursor_ctx));
-	cctx->portal = portal;
+		cctx = (UPLpgSQL_cursor_ctx *) palloc0(sizeof(UPLpgSQL_cursor_ctx));
+		cctx->portal = portal;
 
-	return (void *) cctx;
+		return (void *) cctx;
+	});
 }
 
 
@@ -1056,40 +1114,42 @@ UPL_RT_EXPORT void *
 uplpgsql_rt_exception_push_frame(UPLpgSQL_exec_state *estate,
 								 UPLpgSQL_stmt_block *block)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_exception_frame *frame;
-	MemoryContext stmt_mcontext;
+	return uplpgsql::rt_boundary([&]() -> void * {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_exception_frame *frame;
+		MemoryContext stmt_mcontext;
 
-	/*
-	 * Force the stmt_mcontext to exist before entering the subtransaction.
-	 * This is critical: we need a place to store error data during catch,
-	 * and creating memory contexts during error recovery is risky.
-	 */
-	stmt_mcontext = get_stmt_mcontext(plstate);
+		/*
+		 * Force the stmt_mcontext to exist before entering the subtransaction.
+		 * This is critical: we need a place to store error data during catch,
+		 * and creating memory contexts during error recovery is risky.
+		 */
+		stmt_mcontext = get_stmt_mcontext(plstate);
 
-	/*
-	 * Allocate the frame in the function's memory context (not the
-	 * subtransaction's) so it survives subtransaction abort.
-	 */
-	frame = (UPLpgSQL_exception_frame *)
-		MemoryContextAllocZero(CurrentMemoryContext,
-							   sizeof(UPLpgSQL_exception_frame));
+		/*
+		 * Allocate the frame in the function's memory context (not the
+		 * subtransaction's) so it survives subtransaction abort.
+		 */
+		frame = (UPLpgSQL_exception_frame *)
+			MemoryContextAllocZero(CurrentMemoryContext,
+								   sizeof(UPLpgSQL_exception_frame));
 
-	/* Save state that we'll need to restore on catch */
-	frame->oldcontext = CurrentMemoryContext;
-	frame->oldowner = CurrentResourceOwner;
-	frame->old_eval_econtext = plstate->eval_econtext;
-	frame->saved_cur_error = plstate->cur_error;
-	frame->saved_error_context_stack = error_context_stack;
-	frame->stmt_mcontext = stmt_mcontext;
+		/* Save state that we'll need to restore on catch */
+		frame->oldcontext = CurrentMemoryContext;
+		frame->oldowner = CurrentResourceOwner;
+		frame->old_eval_econtext = plstate->eval_econtext;
+		frame->saved_cur_error = plstate->cur_error;
+		frame->saved_error_context_stack = error_context_stack;
+		frame->stmt_mcontext = stmt_mcontext;
 
-	/* Begin the subtransaction */
-	BeginInternalSubTransaction(NULL);
+		/* Begin the subtransaction */
+		BeginInternalSubTransaction(NULL);
 
-	/* Switch back to function's memory context */
-	MemoryContextSwitchTo(frame->oldcontext);
+		/* Switch back to function's memory context */
+		MemoryContextSwitchTo(frame->oldcontext);
 
-	return (void *) frame;
+		return (void *) frame;
+	});
 }
 
 /*
@@ -1103,20 +1163,22 @@ uplpgsql_rt_exception_push_frame(UPLpgSQL_exec_state *estate,
 UPL_RT_EXPORT void
 uplpgsql_rt_exception_arm(UPLpgSQL_exec_state *estate, void *frame_ptr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
 
-	/* Save the current PG exception stack and install ours */
-	frame->saved_exception_stack = PG_exception_stack;
-	PG_exception_stack = &frame->jmpbuf;
+		/* Save the current PG exception stack and install ours */
+		frame->saved_exception_stack = PG_exception_stack;
+		PG_exception_stack = &frame->jmpbuf;
 
 
-	/*
-	 * Create a new eval_econtext belonging to the current subtransaction.
-	 * If we try to use the outer one, ExprContext shutdown callbacks will
-	 * fire at the wrong times during subxact abort.
-	 */
-	uplpgsql_create_econtext(plstate);
+		/*
+		 * Create a new eval_econtext belonging to the current subtransaction.
+		 * If we try to use the outer one, ExprContext shutdown callbacks will
+		 * fire at the wrong times during subxact abort.
+		 */
+		uplpgsql_create_econtext(plstate);
+	});
 }
 
 /*
@@ -1129,58 +1191,60 @@ uplpgsql_rt_exception_arm(UPLpgSQL_exec_state *estate, void *frame_ptr)
 UPL_RT_EXPORT void
 uplpgsql_rt_exception_try_exit(UPLpgSQL_exec_state *estate, void *frame_ptr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
 
-	/* Restore PG_exception_stack and error_context_stack before committing */
-	PG_exception_stack = frame->saved_exception_stack;
-	error_context_stack = frame->saved_error_context_stack;
+		/* Restore PG_exception_stack and error_context_stack before committing */
+		PG_exception_stack = frame->saved_exception_stack;
+		error_context_stack = frame->saved_error_context_stack;
 
-	/*
-	 * If there's a return value, transfer it out of the subtransaction's
-	 * memory before we commit (which destroys the subtransaction's context).
-	 *
-	 * exec_stmt_block guards this with "rc == PLPGSQL_RC_RETURN &&" as well.
-	 * We do not have rc here, but the test is equivalent: retisnull is only
-	 * cleared by a RETURN that produced a value, so a non-RETURN exit always
-	 * has retisnull set and skips the transfer.  Kept deliberately, not by
-	 * oversight — threading rc in for a check that cannot change the outcome
-	 * would cost a load and an argument on every block exit.
-	 */
-	if (!plstate->retisset && !plstate->retisnull)
-	{
-		int16	resTypLen;
-		bool	resTypByVal;
+		/*
+		 * If there's a return value, transfer it out of the subtransaction's
+		 * memory before we commit (which destroys the subtransaction's context).
+		 *
+		 * exec_stmt_block guards this with "rc == PLPGSQL_RC_RETURN &&" as well.
+		 * We do not have rc here, but the test is equivalent: retisnull is only
+		 * cleared by a RETURN that produced a value, so a non-RETURN exit always
+		 * has retisnull set and skips the transfer.  Kept deliberately, not by
+		 * oversight — threading rc in for a check that cannot change the outcome
+		 * would cost a load and an argument on every block exit.
+		 */
+		if (!plstate->retisset && !plstate->retisnull)
+		{
+			int16	resTypLen;
+			bool	resTypByVal;
 
-		get_typlenbyval(plstate->rettype, &resTypLen, &resTypByVal);
-		plstate->retval = datumTransfer(plstate->retval,
-										resTypByVal, resTypLen);
-	}
+			get_typlenbyval(plstate->rettype, &resTypLen, &resTypByVal);
+			plstate->retval = datumTransfer(plstate->retval,
+											resTypByVal, resTypLen);
+		}
 
-	/* Copy retval back to JIT state */
-	estate->retval = plstate->retval;
-	estate->retisnull = plstate->retisnull;
+		/* Copy retval back to JIT state */
+		estate->retval = plstate->retval;
+		estate->retisnull = plstate->retisnull;
 
-	/* Commit the subtransaction */
-	ReleaseCurrentSubTransaction();
-	MemoryContextSwitchTo(frame->oldcontext);
-	CurrentResourceOwner = frame->oldowner;
+		/* Commit the subtransaction */
+		ReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(frame->oldcontext);
+		CurrentResourceOwner = frame->oldowner;
 
-	/* Restore eval_econtext to the outer one */
-	plstate->eval_econtext = frame->old_eval_econtext;
+		/* Restore eval_econtext to the outer one */
+		plstate->eval_econtext = frame->old_eval_econtext;
 
-	/*
-	 * Terminal exit for this block, so release the frame.  Upstream PL/pgSQL
-	 * has nothing to free here — it uses a stack-local sigjmp_buf via PG_TRY —
-	 * but the JIT decomposition has to heap-allocate it, and a loop body that
-	 * enters an exception block would otherwise accumulate one frame per
-	 * iteration for the whole call.
-	 *
-	 * Safe here: PG_exception_stack was restored above, so the sigjmp_buf
-	 * inside the frame is no longer a longjmp target, and we have switched
-	 * back to the context the frame was allocated in.
-	 */
-	pfree(frame);
+		/*
+		 * Terminal exit for this block, so release the frame.  Upstream PL/pgSQL
+		 * has nothing to free here — it uses a stack-local sigjmp_buf via PG_TRY —
+		 * but the JIT decomposition has to heap-allocate it, and a loop body that
+		 * enters an exception block would otherwise accumulate one frame per
+		 * iteration for the whole call.
+		 *
+		 * Safe here: PG_exception_stack was restored above, so the sigjmp_buf
+		 * inside the frame is no longer a longjmp target, and we have switched
+		 * back to the context the frame was allocated in.
+		 */
+		pfree(frame);
+	});
 }
 
 /*
@@ -1198,65 +1262,67 @@ uplpgsql_rt_exception_catch(UPLpgSQL_exec_state *estate,
 							UPLpgSQL_stmt_block *block,
 							void *frame_ptr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
-	ErrorData  *edata;
-	ListCell   *e;
-	int			handler_idx = 0;
+	return uplpgsql::rt_boundary([&]() -> int32 {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
+		ErrorData  *edata;
+		ListCell   *e;
+		int			handler_idx = 0;
 
-	/* Restore PG_exception_stack and error_context_stack */
-	PG_exception_stack = frame->saved_exception_stack;
-	error_context_stack = frame->saved_error_context_stack;
+		/* Restore PG_exception_stack and error_context_stack */
+		PG_exception_stack = frame->saved_exception_stack;
+		error_context_stack = frame->saved_error_context_stack;
 
-	/* Save error info in our pre-allocated stmt_mcontext */
-	MemoryContextSwitchTo(frame->stmt_mcontext);
-	edata = CopyErrorData();
-	FlushErrorState();
+		/* Save error info in our pre-allocated stmt_mcontext */
+		MemoryContextSwitchTo(frame->stmt_mcontext);
+		edata = CopyErrorData();
+		FlushErrorState();
 
-	/* Abort the subtransaction */
-	RollbackAndReleaseCurrentSubTransaction();
-	MemoryContextSwitchTo(frame->oldcontext);
-	CurrentResourceOwner = frame->oldowner;
+		/* Abort the subtransaction */
+		RollbackAndReleaseCurrentSubTransaction();
+		MemoryContextSwitchTo(frame->oldcontext);
+		CurrentResourceOwner = frame->oldowner;
 
-	/*
-	 * Set up the stmt_mcontext stack as though we had restored our previous
-	 * state and then done push_stmt_mcontext().
-	 */
-	plstate->stmt_mcontext_parent = frame->stmt_mcontext;
-	plstate->stmt_mcontext = NULL;
+		/*
+		 * Set up the stmt_mcontext stack as though we had restored our previous
+		 * state and then done push_stmt_mcontext().
+		 */
+		plstate->stmt_mcontext_parent = frame->stmt_mcontext;
+		plstate->stmt_mcontext = NULL;
 
-	/* Delete any nested stmt_mcontexts created as children */
-	MemoryContextDeleteChildren(frame->stmt_mcontext);
+		/* Delete any nested stmt_mcontexts created as children */
+		MemoryContextDeleteChildren(frame->stmt_mcontext);
 
-	/* Restore eval_econtext to the outer one */
-	plstate->eval_econtext = frame->old_eval_econtext;
+		/* Restore eval_econtext to the outer one */
+		plstate->eval_econtext = frame->old_eval_econtext;
 
-	/*
-	 * Clean up eval state. The tuple table was thrown away during subxact
-	 * abort, so don't try to free it.
-	 */
-	plstate->eval_tuptable = NULL;
-	exec_eval_cleanup(plstate);
+		/*
+		 * Clean up eval state. The tuple table was thrown away during subxact
+		 * abort, so don't try to free it.
+		 */
+		plstate->eval_tuptable = NULL;
+		exec_eval_cleanup(plstate);
 
-	/* Store the error data for use by handlers */
-	estate->cur_error = edata;
+		/* Store the error data for use by handlers */
+		estate->cur_error = edata;
 
-	elog(DEBUG1, "uplpgsql: exception_catch: edata=%p sqlerrcode=%d",
-		 edata, edata->sqlerrcode);
+		elog(DEBUG1, "uplpgsql: exception_catch: edata=%p sqlerrcode=%d",
+			 edata, edata->sqlerrcode);
 
-	/* Find matching handler */
-	foreach(e, block->exceptions->exc_list)
-	{
-		UPLpgSQL_exception *exception = (UPLpgSQL_exception *) lfirst(e);
+		/* Find matching handler */
+		foreach(e, block->exceptions->exc_list)
+		{
+			UPLpgSQL_exception *exception = (UPLpgSQL_exception *) lfirst(e);
 
-		if (exception_matches_conditions(edata, exception->conditions))
-			return handler_idx;
+			if (exception_matches_conditions(edata, exception->conditions))
+				return handler_idx;
 
-		handler_idx++;
-	}
+			handler_idx++;
+		}
 
-	/* No match — caller should rethrow */
-	return -1;
+		/* No match — caller should rethrow */
+		return -1;
+	});
 }
 
 /*
@@ -1268,38 +1334,40 @@ uplpgsql_rt_exception_set_handler_vars(UPLpgSQL_exec_state *estate,
 									   UPLpgSQL_stmt_block *block,
 									   int handler_idx)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	ErrorData  *edata = estate->cur_error;
-	UPLpgSQL_var *state_var;
-	UPLpgSQL_var *errm_var;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		ErrorData  *edata = estate->cur_error;
+		UPLpgSQL_var *state_var;
+		UPLpgSQL_var *errm_var;
 
-	state_var = (UPLpgSQL_var *)
-		plstate->datums[block->exceptions->sqlstate_varno];
-	errm_var = (UPLpgSQL_var *)
-		plstate->datums[block->exceptions->sqlerrm_varno];
+		state_var = (UPLpgSQL_var *)
+			plstate->datums[block->exceptions->sqlstate_varno];
+		errm_var = (UPLpgSQL_var *)
+			plstate->datums[block->exceptions->sqlerrm_varno];
 
-	assign_text_var(plstate, state_var,
-					unpack_sql_state(edata->sqlerrcode));
-	assign_text_var(plstate, errm_var, edata->message);
+		assign_text_var(plstate, state_var,
+						unpack_sql_state(edata->sqlerrcode));
+		assign_text_var(plstate, errm_var, edata->message);
 
-	/*
-	 * Also record the code in the execstate and refresh the user-declared
-	 * SQLSTATE variable, as exec_stmt_block's handler setup does.
-	 *
-	 * This is distinct from the block's own SQLSTATE above: that one is the
-	 * variable the grammar creates for every EXCEPTION block, while
-	 * estate->sqlstate_varno tracks a SQL/PSM-style declared SQLSTATE char(5)
-	 * that the runtime keeps current (block entry, after FETCH, and here).
-	 * The PL/pgSQL grammar never sets stmt_block->sqlstate_varno, so
-	 * uplpgsql_set_sqlstate() is a no-op for this driver today and the
-	 * omission was invisible — but the plumbing is shared with the SQL/PSM
-	 * driver, where it is not.
-	 */
-	plstate->sqlerrcode = edata->sqlerrcode;
-	uplpgsql_set_sqlstate(plstate);
+		/*
+		 * Also record the code in the execstate and refresh the user-declared
+		 * SQLSTATE variable, as exec_stmt_block's handler setup does.
+		 *
+		 * This is distinct from the block's own SQLSTATE above: that one is the
+		 * variable the grammar creates for every EXCEPTION block, while
+		 * estate->sqlstate_varno tracks a SQL/PSM-style declared SQLSTATE char(5)
+		 * that the runtime keeps current (block entry, after FETCH, and here).
+		 * The PL/pgSQL grammar never sets stmt_block->sqlstate_varno, so
+		 * uplpgsql_set_sqlstate() is a no-op for this driver today and the
+		 * omission was invisible — but the plumbing is shared with the SQL/PSM
+		 * driver, where it is not.
+		 */
+		plstate->sqlerrcode = edata->sqlerrcode;
+		uplpgsql_set_sqlstate(plstate);
 
-	/* Set cur_error so GET STACKED DIAGNOSTICS works inside the handler */
-	plstate->cur_error = edata;
+		/* Set cur_error so GET STACKED DIAGNOSTICS works inside the handler */
+		plstate->cur_error = edata;
+	});
 }
 
 /*
@@ -1311,27 +1379,29 @@ UPL_RT_EXPORT void
 uplpgsql_rt_exception_handler_done(UPLpgSQL_exec_state *estate,
 								   void *frame_ptr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
 
-	/* Restore previous cur_error */
-	plstate->cur_error = frame->saved_cur_error;
-	estate->cur_error = frame->saved_cur_error;
+		/* Restore previous cur_error */
+		plstate->cur_error = frame->saved_cur_error;
+		estate->cur_error = frame->saved_cur_error;
 
-	/* Copy retval back to JIT state (handler may have done RETURN) */
-	estate->retval = plstate->retval;
-	estate->retisnull = plstate->retisnull;
+		/* Copy retval back to JIT state (handler may have done RETURN) */
+		estate->retval = plstate->retval;
+		estate->retisnull = plstate->retisnull;
 
-	/* Restore stmt_mcontext stack and release the error data */
-	pop_stmt_mcontext(plstate);
-	MemoryContextReset(frame->stmt_mcontext);
+		/* Restore stmt_mcontext stack and release the error data */
+		pop_stmt_mcontext(plstate);
+		MemoryContextReset(frame->stmt_mcontext);
 
-	/*
-	 * Terminal exit for a handled block; release the frame.  The frame lives
-	 * in the function's context, not in stmt_mcontext, so the reset above has
-	 * not already freed it.
-	 */
-	pfree(frame);
+		/*
+		 * Terminal exit for a handled block; release the frame.  The frame lives
+		 * in the function's context, not in stmt_mcontext, so the reset above has
+		 * not already freed it.
+		 */
+		pfree(frame);
+	});
 }
 
 /*
@@ -1342,33 +1412,35 @@ uplpgsql_rt_exception_handler_done(UPLpgSQL_exec_state *estate,
 UPL_RT_EXPORT void
 uplpgsql_rt_exception_rethrow(UPLpgSQL_exec_state *estate, void *frame_ptr)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
-	ErrorData  *edata = estate->cur_error;
+	return uplpgsql::rt_boundary([&]() -> void {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_exception_frame *frame = (UPLpgSQL_exception_frame *) frame_ptr;
+		ErrorData  *edata = estate->cur_error;
 
-	/* Restore previous cur_error */
-	plstate->cur_error = frame->saved_cur_error;
-	estate->cur_error = frame->saved_cur_error;
+		/* Restore previous cur_error */
+		plstate->cur_error = frame->saved_cur_error;
+		estate->cur_error = frame->saved_cur_error;
 
-	/*
-	 * Restore stmt_mcontext and rethrow.
-	 *
-	 * The interpreter does not pop here — it lets the outer PG_CATCH unwind do
-	 * it.  Popping first is safe: pop_stmt_mcontext only restores the stack
-	 * pointer, it does not reset the context, so edata (which lives there)
-	 * stays valid across ReThrowError.  Done explicitly because the JIT has no
-	 * enclosing PG_CATCH of its own to unwind for it.
-	 */
-	pop_stmt_mcontext(plstate);
+		/*
+		 * Restore stmt_mcontext and rethrow.
+		 *
+		 * The interpreter does not pop here — it lets the outer PG_CATCH unwind do
+		 * it.  Popping first is safe: pop_stmt_mcontext only restores the stack
+		 * pointer, it does not reset the context, so edata (which lives there)
+		 * stays valid across ReThrowError.  Done explicitly because the JIT has no
+		 * enclosing PG_CATCH of its own to unwind for it.
+		 */
+		pop_stmt_mcontext(plstate);
 
-	/*
-	 * Terminal exit for an unhandled block.  Free the frame before
-	 * ReThrowError longjmps out of here — nothing below this point returns.
-	 * edata lives in stmt_mcontext, not in the frame, so it is unaffected.
-	 */
-	pfree(frame);
+		/*
+		 * Terminal exit for an unhandled block.  Free the frame before
+		 * ReThrowError longjmps out of here — nothing below this point returns.
+		 * edata lives in stmt_mcontext, not in the frame, so it is unaffected.
+		 */
+		pfree(frame);
 
-	ReThrowError(edata);
+		ReThrowError(edata);
+	});
 }
 
 /*
@@ -1531,19 +1603,21 @@ uplpgsql_rt_copy_assign_var_datum_scoped(UPLpgSQL_exec_state *estate,
 UPL_RT_EXPORT Datum
 uplpgsql_rt_get_recfield(UPLpgSQL_exec_state *estate, int recfield_dno)
 {
-	UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
-	UPLpgSQL_datum	   *datum = plstate->datums[recfield_dno];
-	Oid					type_id;
-	int32				typetypmod;
-	Datum				value;
-	bool				isnull;
+	return uplpgsql::rt_boundary([&]() -> Datum {
+		UPLpgSQL_execstate *plstate = estate->uplpgsql_estate;
+		UPLpgSQL_datum	   *datum = plstate->datums[recfield_dno];
+		Oid					type_id;
+		int32				typetypmod;
+		Datum				value;
+		bool				isnull;
 
-	exec_eval_datum(plstate, datum, &type_id, &typetypmod, &value, &isnull);
+		exec_eval_datum(plstate, datum, &type_id, &typetypmod, &value, &isnull);
 
-	if (isnull)
-		return (Datum) 0;
+		if (isnull)
+			return (Datum) 0;
 
-	return value;
+		return value;
+	});
 }
 
 /*
